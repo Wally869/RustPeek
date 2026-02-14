@@ -1,0 +1,4 @@
+[package]
+name = "sample_did_you_mean"
+version = "0.1.0"
+edition = "2024"
