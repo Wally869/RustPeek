@@ -2,6 +2,8 @@
 
 Fast Rust validation without compilation. Parses `.rs` files with `syn`, builds a crate-level symbol table, catches structural errors. No `rustc`, no `target/`, sub-second.
 
+> **Disclaimer:** This codebase is AI-generated. Rust's module and name resolution has many edge cases, and the logic here may not handle all of them correctly. Use `check` freely, but exercise caution with `fix` — review what it changes, and keep your work committed before running it.
+
 ## Usage
 
 ```
