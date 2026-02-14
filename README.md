@@ -43,9 +43,17 @@ If it can't be proven wrong from source files alone, rustpeek says nothing.
 ## Library
 
 ```rust
+// Check all files
 let result = rustpeek::analyze(Path::new("./my-crate"), None);
+
+// Check only specific files (still indexes the full crate for context)
+let changed = vec![PathBuf::from("src/handlers.rs")];
+let result = rustpeek::analyze(Path::new("./my-crate"), Some(&changed));
+
 for diag in &result.diagnostics { println!("{diag}"); }
 ```
+
+The second argument is an optional list of changed files. Pass `None` to validate everything, or `Some(&[...])` to only validate those files — useful for incremental checks where you only care about what you just edited.
 
 ## Testing
 
