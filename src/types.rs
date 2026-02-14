@@ -145,6 +145,8 @@ pub struct UseInfo {
     pub alias: String,
     /// Whether this is a glob import (`use foo::*`)
     pub is_glob: bool,
+    /// Visibility of the use statement (for re-exports via `pub use`)
+    pub vis: Vis,
 }
 
 /// An impl block

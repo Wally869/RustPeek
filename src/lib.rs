@@ -10,6 +10,22 @@ use std::path::{Path, PathBuf};
 
 use types::*;
 
+/// Read the crate name from Cargo.toml (with `-` replaced by `_` for Rust identifiers).
+fn read_crate_name(crate_root: &Path) -> Option<String> {
+    let cargo_toml = crate_root.join("Cargo.toml");
+    let content = std::fs::read_to_string(cargo_toml).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name") {
+            if let Some(val) = trimmed.split('=').nth(1) {
+                let name = val.trim().trim_matches('"').trim_matches('\'');
+                return Some(name.replace('-', "_"));
+            }
+        }
+    }
+    None
+}
+
 /// Run the full rustpeek analysis on a crate.
 ///
 /// - `crate_root`: path to the crate root directory (containing Cargo.toml)
@@ -76,6 +92,8 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
 
     // ── Pass 2: Crate indexing + validation ──
 
+    let crate_name = read_crate_name(crate_root);
+
     // Step 1: Build the symbol table from ALL files in the crate
     let mut symbol_table = SymbolTable::new();
 
@@ -97,7 +115,7 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
     // Step 2: Validate only the changed files against the full symbol table
     for (module_path, ast, file_path) in &parsed_files {
         let diagnostics =
-            validator::validate_file(ast, file_path, module_path, &symbol_table, &src_dir);
+            validator::validate_file(ast, file_path, module_path, &symbol_table, &src_dir, crate_name.as_deref());
         all_diagnostics.extend(diagnostics);
     }
 

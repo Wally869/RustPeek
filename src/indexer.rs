@@ -195,7 +195,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
         }
 
         syn::Item::Use(u) => {
-            collect_use_tree(&u.tree, &mut Vec::new(), info);
+            let vis = Vis::from_syn(&u.vis);
+            collect_use_tree(&u.tree, &mut Vec::new(), info, &vis);
         }
 
         syn::Item::Impl(imp) => {
@@ -272,11 +273,11 @@ fn extract_type_name(ty: &syn::Type) -> Option<String> {
 }
 
 /// Recursively collect use statements from a use tree.
-fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut ModuleInfo) {
+fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut ModuleInfo, vis: &Vis) {
     match tree {
         syn::UseTree::Path(p) => {
             prefix.push(p.ident.to_string());
-            collect_use_tree(&p.tree, prefix, info);
+            collect_use_tree(&p.tree, prefix, info, vis);
             prefix.pop();
         }
         syn::UseTree::Name(n) => {
@@ -287,6 +288,7 @@ fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut Mo
                 path,
                 alias,
                 is_glob: false,
+                vis: vis.clone(),
             });
         }
         syn::UseTree::Rename(r) => {
@@ -297,6 +299,7 @@ fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut Mo
                 path,
                 alias,
                 is_glob: false,
+                vis: vis.clone(),
             });
         }
         syn::UseTree::Glob(_) => {
@@ -304,11 +307,12 @@ fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut Mo
                 path: prefix.clone(),
                 alias: String::new(),
                 is_glob: true,
+                vis: vis.clone(),
             });
         }
         syn::UseTree::Group(g) => {
             for tree in &g.items {
-                collect_use_tree(tree, prefix, info);
+                collect_use_tree(tree, prefix, info, vis);
             }
         }
     }

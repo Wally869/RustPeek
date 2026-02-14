@@ -12,6 +12,7 @@ pub fn validate_file(
     module_path: &ModulePath,
     symbols: &SymbolTable,
     src_dir: &Path,
+    crate_name: Option<&str>,
 ) -> Vec<Diagnostic> {
     let mut visitor = ValidationVisitor {
         diagnostics: Vec::new(),
@@ -20,6 +21,7 @@ pub fn validate_file(
         symbols,
         src_dir,
         source_lines: None,
+        crate_name,
     };
 
     visitor.validate_mod_declarations(ast);
@@ -37,6 +39,8 @@ struct ValidationVisitor<'a> {
     src_dir: &'a Path,
     /// Lazily loaded source lines for fix generation
     source_lines: Option<Vec<String>>,
+    /// The crate's own name (from Cargo.toml), so `use <name>::...` is treated as `use crate::...`
+    crate_name: Option<&'a str>,
 }
 
 impl<'a> ValidationVisitor<'a> {
@@ -138,7 +142,7 @@ impl<'a> ValidationVisitor<'a> {
                 self.check_use_path(&full_path, r.ident.span());
             }
             syn::UseTree::Glob(_) => {
-                if is_crate_path(prefix) {
+                if is_crate_path(prefix, self.crate_name) {
                     let mod_path = ModulePath(prefix.clone());
                     if !self.symbols.modules.contains_key(&mod_path) {
                         let parent_path = ModulePath(prefix[..prefix.len() - 1].to_vec());
@@ -172,7 +176,7 @@ impl<'a> ValidationVisitor<'a> {
 
     /// Check if a `use` path resolves within the crate.
     fn check_use_path(&mut self, path: &[String], span: proc_macro2::Span) {
-        if !is_crate_path(path) {
+        if !is_crate_path(path, self.crate_name) {
             return;
         }
 
@@ -180,12 +184,29 @@ impl<'a> ValidationVisitor<'a> {
             return;
         }
 
-        let item_name = &path[path.len() - 1];
-        let module_segments = &path[..path.len() - 1];
+        // Resolve self::/super:: to absolute crate paths before lookup
+        let resolved = match self.resolve_use_path(path) {
+            Some(r) => r,
+            None => return, // Can't resolve — likely external, skip
+        };
+
+        let item_name = &resolved[resolved.len() - 1];
+        let module_segments = &resolved[..resolved.len() - 1];
         let module_path = ModulePath(module_segments.to_vec());
 
+        // `use foo::self` means "import the module itself" — valid if the module exists
+        if item_name == "self" {
+            if self.symbols.modules.contains_key(&module_path) {
+                return;
+            }
+            // Fall through to "unresolved module" error below
+        }
+
         if let Some(module_info) = self.symbols.modules.get(&module_path) {
-            let item_exists = module_info.items.iter().any(|i| i.name == *item_name);
+            let item_exists = module_info.items.iter().any(|i| i.name == *item_name)
+                || module_info.uses.iter().any(|u| {
+                    !u.is_glob && u.vis != Vis::Private && u.alias == *item_name
+                });
 
             if !item_exists {
                 let child_mod = module_path.child(item_name);
@@ -265,30 +286,45 @@ impl<'a> ValidationVisitor<'a> {
             return None;
         }
 
-        match path[0].as_str() {
-            "crate" => Some(path.to_vec()),
-            "self" => {
-                let mut resolved = self.module_path.0.clone();
+        let first = path[0].as_str();
+
+        // Treat the crate's own name as `crate`
+        let is_own_name = self.crate_name.is_some_and(|name| name == first);
+
+        if first == "crate" || is_own_name {
+            if is_own_name {
+                // Replace crate name with "crate" for uniform lookup
+                let mut resolved = vec!["crate".to_string()];
                 resolved.extend(path[1..].iter().cloned());
                 Some(resolved)
+            } else {
+                Some(path.to_vec())
             }
-            "super" => {
-                if let Some(parent) = self.module_path.parent() {
-                    let mut resolved = parent.0;
+        } else {
+            match first {
+                "self" => {
+                    let mut resolved = self.module_path.0.clone();
                     resolved.extend(path[1..].iter().cloned());
                     Some(resolved)
-                } else {
+                }
+                "super" => {
+                    if let Some(parent) = self.module_path.parent() {
+                        let mut resolved = parent.0;
+                        resolved.extend(path[1..].iter().cloned());
+                        Some(resolved)
+                    } else {
+                        None
+                    }
+                }
+                _ => {
+                    let candidate = self.module_path.child(first);
+                    if self.symbols.modules.contains_key(&candidate) {
+                        let mut resolved = candidate.0;
+                        resolved.extend(path[1..].iter().cloned());
+                        return Some(resolved);
+                    }
                     None
                 }
-            }
-            first => {
-                let candidate = self.module_path.child(first);
-                if self.symbols.modules.contains_key(&candidate) {
-                    let mut resolved = candidate.0;
-                    resolved.extend(path[1..].iter().cloned());
-                    return Some(resolved);
-                }
-                None
             }
         }
     }
@@ -624,9 +660,12 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     }
 }
 
-/// Check if a path starts with `crate`, `self`, or `super`.
-fn is_crate_path(path: &[String]) -> bool {
-    path.first().is_some_and(|s| s == "crate" || s == "self" || s == "super")
+/// Check if a path starts with `crate`, `self`, `super`, or the crate's own name.
+fn is_crate_path(path: &[String], crate_name: Option<&str>) -> bool {
+    path.first().is_some_and(|s| {
+        s == "crate" || s == "self" || s == "super"
+            || crate_name.is_some_and(|name| name == s)
+    })
 }
 
 /// Get the last segment name from a path.
