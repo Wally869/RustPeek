@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run tests
+        run: cargo test --release
+
+      - name: Package binary
+        run: |
+          cd target/release
+          tar czf rustpeek-linux-x86_64.tar.gz rustpeek
+          mv rustpeek-linux-x86_64.tar.gz ../..
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rustpeek-linux-x86_64.tar.gz
+          generate_release_notes: true
