@@ -10,28 +10,58 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Run tests
-        run: cargo test --release
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test --release --target ${{ matrix.target }}
 
-      - name: Package binary
-        run: |
-          cd target/release
-          tar czf rustpeek-linux-x86_64.tar.gz rustpeek
-          mv rustpeek-linux-x86_64.tar.gz ../..
+      - name: Rename binary
+        run: cp target/${{ matrix.target }}/release/rustpeek rustpeek-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustpeek-${{ matrix.target }}
+          path: rustpeek-${{ matrix.target }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: rustpeek-linux-x86_64.tar.gz
+          files: rustpeek-*
           generate_release_notes: true
