@@ -365,8 +365,8 @@ impl<'a> ValidationVisitor<'a> {
                 file: self.file_path.to_path_buf(),
                 line: span.start().line,
                 column: span.start().column + 1,
-                message: format!("unresolved module `{}`", module_segments.join("::")),
-                error_code: Some("E0433".to_string()),
+                message: format!("unresolved import `{}`", module_segments.join("::")),
+                error_code: Some("E0432".to_string()),
                 hint: None,
                 fix: None,
             });
