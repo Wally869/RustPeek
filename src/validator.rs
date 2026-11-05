@@ -277,14 +277,21 @@ impl<'a> ValidationVisitor<'a> {
                         });
                     }
                 } else if self.is_unknown_external_crate(prefix) {
+                    // rustc: E0432 for `use missing::*;`, E0433 when more segments follow
+                    // the unknown crate (`use missing::sub::*;`).
+                    let (message, code) = if prefix.len() > 1 {
+                        (format!("cannot find module or crate `{}`", prefix[0]), "E0433")
+                    } else {
+                        (format!("unresolved import `{}`", prefix[0]), "E0432")
+                    };
                     let span = use_item.use_token.span;
                     self.diagnostics.push(Diagnostic {
                         severity: Severity::Error,
                         file: self.file_path.to_path_buf(),
                         line: span.start().line,
                         column: span.start().column + 1,
-                        message: format!("unresolved import `{}`", prefix[0]),
-                        error_code: Some("E0432".to_string()),
+                        message,
+                        error_code: Some(code.to_string()),
                         hint: None,
                         fix: None,
                     });
