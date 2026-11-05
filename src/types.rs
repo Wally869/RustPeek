@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -203,11 +203,201 @@ impl SymbolTable {
         results
     }
 
-    /// Find an item in a specific module by name
-    pub fn find_in_module(&self, module: &ModulePath, name: &str) -> Option<&ItemInfo> {
-        self.modules
-            .get(module)
-            .and_then(|m| m.items.iter().find(|i| i.name == name))
+    /// Map a use path to an absolute crate path, resolving `self`, any run of `super`,
+    /// the crate's own name and child-module prefixes against `from`.
+    pub fn resolve_use_path(
+        &self,
+        from: &ModulePath,
+        path: &[String],
+        crate_name: Option<&str>,
+    ) -> Option<Vec<String>> {
+        let first = path.first()?.as_str();
+        if first == "crate" {
+            return Some(path.to_vec());
+        }
+        if crate_name == Some(first) {
+            let mut resolved = vec!["crate".to_string()];
+            resolved.extend(path[1..].iter().cloned());
+            return Some(resolved);
+        }
+        match first {
+            "self" => {
+                let mut resolved = from.0.clone();
+                resolved.extend(path[1..].iter().cloned());
+                Some(resolved)
+            }
+            "super" => {
+                let mut base = from.clone();
+                let mut consumed = 0;
+                while path.get(consumed).map(String::as_str) == Some("super") {
+                    base = base.parent()?;
+                    consumed += 1;
+                }
+                let mut resolved = base.0;
+                resolved.extend(path[consumed..].iter().cloned());
+                Some(resolved)
+            }
+            _ => {
+                let candidate = from.child(first);
+                if self.modules.contains_key(&candidate) {
+                    let mut resolved = candidate.0;
+                    resolved.extend(path[1..].iter().cloned());
+                    Some(resolved)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Find what `name` refers to inside `module`: an own item, a followed `use`
+    /// (re-exports included) or a glob import. Modules are items of kind `Module`.
+    /// `accessor` is the module the lookup is made from.
+    pub fn resolve_item(
+        &self,
+        module: &ModulePath,
+        name: &str,
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+    ) -> Option<&ItemInfo> {
+        self.resolve_item_in(module, name, accessor, crate_name, &mut HashSet::new())
+    }
+
+    /// Resolve a module reached by an absolute path, going through re-exported modules.
+    pub fn resolve_module(
+        &self,
+        abs: &[String],
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+    ) -> Option<ModulePath> {
+        self.resolve_module_in(abs, accessor, crate_name, &mut HashSet::new())
+    }
+
+    fn resolve_item_in(
+        &self,
+        module: &ModulePath,
+        name: &str,
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+        in_progress: &mut HashSet<(ModulePath, String)>,
+    ) -> Option<&ItemInfo> {
+        let key = (module.clone(), name.to_string());
+        if !in_progress.insert(key.clone()) {
+            return None;
+        }
+        let found = self.search_module(module, name, accessor, crate_name, in_progress);
+        in_progress.remove(&key);
+        found
+    }
+
+    fn search_module(
+        &self,
+        module: &ModulePath,
+        name: &str,
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+        in_progress: &mut HashSet<(ModulePath, String)>,
+    ) -> Option<&ItemInfo> {
+        // An inline `mod` has no entry of its own: its items live in the enclosing file's
+        // module, tagged with the inline module path.
+        let info = self.modules.get(module).or_else(|| self.enclosing_file_module(module))?;
+        if let Some(item) = info.items.iter().find(|i| i.name == name && i.module == *module) {
+            return Some(item);
+        }
+        if !self.modules.contains_key(module) {
+            return None;
+        }
+
+        for use_info in &info.uses {
+            if use_info.is_glob
+                || use_info.alias != name
+                || !use_info.vis.accessible_from(module, accessor)
+            {
+                continue;
+            }
+            let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
+                continue;
+            };
+            if let Some(item) = self.resolve_abs_item(&abs, accessor, crate_name, in_progress) {
+                return Some(item);
+            }
+        }
+
+        for use_info in &info.uses {
+            if !use_info.is_glob || !use_info.vis.accessible_from(module, accessor) {
+                continue;
+            }
+            let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
+                continue;
+            };
+            let Some(target) = self.resolve_module_in(&abs, accessor, crate_name, in_progress)
+            else {
+                continue;
+            };
+            let found = self
+                .resolve_item_in(&target, name, accessor, crate_name, in_progress)
+                .filter(|i| i.vis.accessible_from(&i.module, accessor));
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    fn enclosing_file_module(&self, module: &ModulePath) -> Option<&ModuleInfo> {
+        let mut ancestor = module.parent();
+        while let Some(path) = ancestor {
+            if let Some(info) = self.modules.get(&path) {
+                return Some(info);
+            }
+            ancestor = path.parent();
+        }
+        None
+    }
+
+    /// Does `module` exist: a indexed file module, or an inline module holding items.
+    pub fn module_exists(&self, module: &ModulePath) -> bool {
+        self.modules.contains_key(module)
+            || self
+                .enclosing_file_module(module)
+                .is_some_and(|info| info.items.iter().any(|i| i.module == *module))
+    }
+
+    fn resolve_abs_item(
+        &self,
+        abs: &[String],
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+        in_progress: &mut HashSet<(ModulePath, String)>,
+    ) -> Option<&ItemInfo> {
+        let abs = match abs.split_last() {
+            Some((last, rest)) if last == "self" && !rest.is_empty() => rest,
+            _ => abs,
+        };
+        let (name, module_part) = abs.split_last()?;
+        let module = self.resolve_module_in(module_part, accessor, crate_name, in_progress)?;
+        self.resolve_item_in(&module, name, accessor, crate_name, in_progress)
+    }
+
+    fn resolve_module_in(
+        &self,
+        abs: &[String],
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+        in_progress: &mut HashSet<(ModulePath, String)>,
+    ) -> Option<ModulePath> {
+        if abs.first().map(String::as_str) != Some("crate") {
+            return None;
+        }
+        let mut current = ModulePath::root();
+        for segment in &abs[1..] {
+            let item = self.resolve_item_in(&current, segment, accessor, crate_name, in_progress)?;
+            if item.kind != ItemKind::Module {
+                return None;
+            }
+            current = item.module.child(&item.name);
+        }
+        Some(current)
     }
 
     /// Find impl methods for a type name

@@ -143,26 +143,39 @@ impl<'a> ValidationVisitor<'a> {
             }
             syn::UseTree::Glob(_) => {
                 if is_crate_path(prefix, self.crate_name) {
-                    let mod_path = ModulePath(prefix.clone());
-                    if !self.symbols.modules.contains_key(&mod_path) {
-                        let parent_path = ModulePath(prefix[..prefix.len() - 1].to_vec());
-                        let last = prefix.last().map(|s| s.as_str()).unwrap_or("");
-                        if self.symbols.find_in_module(&parent_path, last).is_none() {
-                            let span = use_item.use_token.span;
-                            self.diagnostics.push(Diagnostic {
-                                severity: Severity::Error,
-                                file: self.file_path.to_path_buf(),
-                                line: span.start().line,
-                                column: span.start().column + 1,
-                                message: format!(
-                                    "unresolved glob import `{}::*`",
-                                    prefix.join("::")
-                                ),
-                                error_code: Some("E0432".to_string()),
-                                hint: None,
-                                fix: None,
-                            });
-                        }
+                    let symbols = self.symbols;
+                    let resolves = symbols
+                        .resolve_use_path(self.module_path, prefix, self.crate_name)
+                        .is_some_and(|abs| {
+                            let is_module = symbols
+                                .resolve_module(&abs, self.module_path, self.crate_name)
+                                .is_some_and(|m| symbols.module_exists(&m));
+                            is_module
+                                || abs.split_last().is_some_and(|(name, module_part)| {
+                                    symbols
+                                        .resolve_module(module_part, self.module_path, self.crate_name)
+                                        .is_some_and(|m| {
+                                            symbols
+                                                .resolve_item(&m, name, self.module_path, self.crate_name)
+                                                .is_some()
+                                        })
+                                })
+                        });
+                    if !resolves {
+                        let span = use_item.use_token.span;
+                        self.diagnostics.push(Diagnostic {
+                            severity: Severity::Error,
+                            file: self.file_path.to_path_buf(),
+                            line: span.start().line,
+                            column: span.start().column + 1,
+                            message: format!(
+                                "unresolved glob import `{}::*`",
+                                prefix.join("::")
+                            ),
+                            error_code: Some("E0432".to_string()),
+                            hint: None,
+                            fix: None,
+                        });
                     }
                 }
             }
@@ -185,35 +198,31 @@ impl<'a> ValidationVisitor<'a> {
         }
 
         // Resolve self::/super:: to absolute crate paths before lookup
-        let resolved = match self.resolve_use_path(path) {
+        let symbols = self.symbols;
+        let resolved = match symbols.resolve_use_path(self.module_path, path, self.crate_name) {
             Some(r) => r,
             None => return, // Can't resolve — likely external, skip
         };
 
         let item_name = &resolved[resolved.len() - 1];
         let module_segments = &resolved[..resolved.len() - 1];
-        let module_path = ModulePath(module_segments.to_vec());
+        let resolved_module = symbols
+            .resolve_module(module_segments, self.module_path, self.crate_name)
+            .filter(|m| symbols.module_exists(m));
 
-        // `use foo::self` means "import the module itself" — valid if the module exists
-        if item_name == "self" {
-            if self.symbols.modules.contains_key(&module_path) {
+        if let Some(module_path) = resolved_module {
+            // `use foo::self` means "import the module itself"
+            if item_name == "self" {
                 return;
             }
-            // Fall through to "unresolved module" error below
-        }
+            let found = symbols.resolve_item(
+                &module_path,
+                item_name,
+                self.module_path,
+                self.crate_name,
+            );
 
-        if let Some(module_info) = self.symbols.modules.get(&module_path) {
-            let item_exists = module_info.items.iter().any(|i| i.name == *item_name)
-                || module_info.uses.iter().any(|u| {
-                    !u.is_glob && u.vis != Vis::Private && u.alias == *item_name
-                });
-
-            if !item_exists {
-                let child_mod = module_path.child(item_name);
-                if self.symbols.modules.contains_key(&child_mod) {
-                    return;
-                }
-
+            if found.is_none() {
                 // Find similar names for hint and potential fix
                 let similar = self.find_similar_in_module(&module_path, item_name);
                 let fix = similar.as_ref().and_then(|hint_msg| {
@@ -242,8 +251,8 @@ impl<'a> ValidationVisitor<'a> {
                     fix,
                 });
             } else {
-                // Item exists — check visibility
-                if let Some(item) = module_info.items.iter().find(|i| i.name == *item_name) {
+                // Item exists — check visibility of items defined in that module
+                if let Some(item) = found.filter(|i| i.module == module_path) {
                     if !item.vis.accessible_from(&item.module, self.module_path) {
                         self.diagnostics.push(Diagnostic {
                             severity: Severity::Error,
@@ -280,55 +289,6 @@ impl<'a> ValidationVisitor<'a> {
         syn::visit::visit_file(&mut ref_visitor, ast);
     }
 
-    /// Resolve a use path to an absolute crate path.
-    fn resolve_use_path(&self, path: &[String]) -> Option<Vec<String>> {
-        if path.is_empty() {
-            return None;
-        }
-
-        let first = path[0].as_str();
-
-        // Treat the crate's own name as `crate`
-        let is_own_name = self.crate_name.is_some_and(|name| name == first);
-
-        if first == "crate" || is_own_name {
-            if is_own_name {
-                // Replace crate name with "crate" for uniform lookup
-                let mut resolved = vec!["crate".to_string()];
-                resolved.extend(path[1..].iter().cloned());
-                Some(resolved)
-            } else {
-                Some(path.to_vec())
-            }
-        } else {
-            match first {
-                "self" => {
-                    let mut resolved = self.module_path.0.clone();
-                    resolved.extend(path[1..].iter().cloned());
-                    Some(resolved)
-                }
-                "super" => {
-                    if let Some(parent) = self.module_path.parent() {
-                        let mut resolved = parent.0;
-                        resolved.extend(path[1..].iter().cloned());
-                        Some(resolved)
-                    } else {
-                        None
-                    }
-                }
-                _ => {
-                    let candidate = self.module_path.child(first);
-                    if self.symbols.modules.contains_key(&candidate) {
-                        let mut resolved = candidate.0;
-                        resolved.extend(path[1..].iter().cloned());
-                        return Some(resolved);
-                    }
-                    None
-                }
-            }
-        }
-    }
-
     /// Find similar item names in a module for "did you mean?" suggestions.
     fn find_similar_in_module(&self, module: &ModulePath, name: &str) -> Option<String> {
         let module_info = self.symbols.modules.get(module)?;
@@ -345,44 +305,10 @@ impl<'a> ValidationVisitor<'a> {
         }
     }
 
-    /// Resolve what names are in scope for a given module.
-    fn names_in_scope(&self) -> Vec<(String, &ItemInfo)> {
-        let mut scope = Vec::new();
-
-        if let Some(module_info) = self.symbols.modules.get(self.module_path) {
-            for item in &module_info.items {
-                scope.push((item.name.clone(), item));
-            }
-
-            for use_info in &module_info.uses {
-                let resolved = self.resolve_use_path(&use_info.path);
-
-                if use_info.is_glob {
-                    if let Some(resolved) = &resolved {
-                        let mod_path = ModulePath(resolved.clone());
-                        if let Some(imported_mod) = self.symbols.modules.get(&mod_path) {
-                            for item in &imported_mod.items {
-                                if item.vis.accessible_from(&item.module, self.module_path) {
-                                    scope.push((item.name.clone(), item));
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if let Some(resolved) = &resolved {
-                        if resolved.len() >= 2 {
-                            let item_name = resolved.last().unwrap();
-                            let mod_path = ModulePath(resolved[..resolved.len() - 1].to_vec());
-                            if let Some(item) = self.symbols.find_in_module(&mod_path, item_name) {
-                                scope.push((use_info.alias.clone(), item));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        scope
+    /// Resolve a name visible in the current module (own items, uses, re-exports, globs).
+    fn lookup_in_scope(&self, name: &str) -> Option<&ItemInfo> {
+        self.symbols
+            .resolve_item(self.module_path, name, self.module_path, self.crate_name)
     }
 
     /// Find an item by name across the entire crate (for suggestions).
@@ -409,10 +335,9 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
         let type_name = path_last_segment(&node.path);
         if let Some(type_name) = type_name {
             let struct_fields: Option<Vec<String>> = {
-                let scope = self.validator.names_in_scope();
-                scope.iter()
-                    .find(|(n, i)| *n == type_name && i.kind == ItemKind::Struct)
-                    .map(|(_, item)| item.fields.iter().map(|f| f.name.clone()).collect())
+                self.validator.lookup_in_scope(&type_name)
+                    .filter(|i| i.kind == ItemKind::Struct)
+                    .map(|item| item.fields.iter().map(|f| f.name.clone()).collect())
             };
 
             if let Some(expected_fields) = struct_fields {
@@ -495,10 +420,9 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = &*node.func {
             if let Some(fn_name) = path_last_segment(&path.path) {
-                let scope = self.validator.names_in_scope();
-                if let Some((_, item)) = scope.iter().find(|(n, i)| {
-                    *n == fn_name && i.kind == ItemKind::Function
-                }) {
+                if let Some(item) = self.validator.lookup_in_scope(&fn_name)
+                    .filter(|i| i.kind == ItemKind::Function)
+                {
                     if let Some(expected) = item.param_count {
                         let actual = node.args.len();
                         if actual != expected {
@@ -532,10 +456,9 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
             let variant_name = node.path.segments[1].ident.to_string();
 
             let check_result: Option<(Vec<String>, Vec<String>)> = {
-                let scope = self.validator.names_in_scope();
-                scope.iter()
-                    .find(|(n, i)| *n == type_name && i.kind == ItemKind::Enum)
-                    .map(|(_, item)| {
+                self.validator.lookup_in_scope(&type_name)
+                    .filter(|i| i.kind == ItemKind::Enum)
+                    .map(|item| {
                         let variants: Vec<String> = item.variants.iter().map(|v| v.name.clone()).collect();
                         let similar: Vec<String> = item.variants.iter()
                             .filter(|v| is_similar(&v.name, &variant_name))
@@ -608,8 +531,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     /// or uses smart import resolution when there are multiple candidates.
     fn check_type_in_scope(&mut self, name: &str, span: proc_macro2::Span) {
         let in_scope = {
-            let scope = self.validator.names_in_scope();
-            scope.iter().any(|(n, _)| *n == name)
+            self.validator.lookup_in_scope(name).is_some()
         };
 
         if in_scope {
