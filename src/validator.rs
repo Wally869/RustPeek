@@ -120,7 +120,8 @@ struct ValidationVisitor<'a> {
 fn collect_macro_modules(items: &[syn::Item], module: &ModulePath, out: &mut HashSet<ModulePath>) {
     for item in items {
         match item {
-            syn::Item::Macro(_) => {
+            // An invocation, not a `macro_rules!` definition: the tool cannot expand it.
+            syn::Item::Macro(m) if m.ident.is_none() => {
                 out.insert(module.clone());
             }
             syn::Item::Mod(m) => {
@@ -807,10 +808,12 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
         if node.qself.is_none() {
             self.check_path_modules(&node.path);
         }
-        let type_name = path_last_segment(&node.path);
+        let type_name = path_last_segment(&node.path).filter(|_| node.qself.is_none());
+        let names: Vec<String> = node.path.segments.iter().map(|s| s.ident.to_string()).collect();
         if let Some(type_name) = type_name {
+            // Through its own path: `Enum::Variant { .. }` names no struct.
             let struct_fields: Option<Vec<String>> = {
-                self.validator.lookup_in_scope(&type_name)
+                self.validator.lookup_path(&names)
                     .filter(|i| i.kind == ItemKind::Struct)
                     .map(|item| item.fields.iter().map(|f| f.name.clone()).collect())
             };
@@ -1199,7 +1202,9 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         let in_scope = PRELUDE_NAMES.contains(&name)
             || !matches!(self.validator.lookup_local(name), LocalLookup::None)
             || self.validator.module_uses().any(|u| !u.is_glob && u.alias == name)
-            || self.validator.lookup_in_scope(name).is_some();
+            || self.validator.lookup_in_scope(name).is_some()
+            // An item-level macro invocation in this module may define the name.
+            || self.validator.macro_modules.contains(&self.validator.module_path);
 
         if in_scope {
             return;
