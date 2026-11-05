@@ -220,7 +220,12 @@ impl<'a> ValidationVisitor<'a> {
                 self.check_use_path(&full_path, r.ident.span(), &use_vis);
             }
             syn::UseTree::Glob(_) => {
-                if is_crate_path(prefix, self.crate_name) {
+                let local_bare = !prefix.is_empty()
+                    && self
+                        .symbols
+                        .resolve_use_path(&self.module_path, prefix, self.crate_name)
+                        .is_some();
+                if is_crate_path(prefix, self.crate_name) || local_bare {
                     let outcome = self.glob_outcome(prefix);
                     if outcome == GlobOutcome::Private {
                         let span = use_item.use_token.span;

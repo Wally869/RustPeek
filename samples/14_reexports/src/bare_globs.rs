@@ -34,6 +34,18 @@ fn in_body() {
     let _a: Alpha = Alpha;
 }
 
+enum Color {
+    Red,
+}
+
+use Color::*;
+use inner::nested::*;
+
+fn deep() {
+    let _b: Beta = Beta;
+    let _r = Red;
+}
+
 mod user {
     use super::outer::Gamma;
 

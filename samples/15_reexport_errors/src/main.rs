@@ -14,5 +14,6 @@ mod reexport_vis_errors;
 mod fn_use_errors;
 mod reexport_chain_errors;
 mod vis_past_root_errors;
+mod bare_glob_errors;
 pub(super) fn root_item() {}
 fn main() {}
