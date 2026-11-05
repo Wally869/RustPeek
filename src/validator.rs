@@ -12,7 +12,7 @@ pub fn validate_file(
     file_path: &Path,
     module_path: &ModulePath,
     symbols: &SymbolTable,
-    src_dir: &Path,
+    owned_dir: &Path,
     crate_name: Option<&str>,
     external_crates: Option<&HashSet<String>>,
 ) -> Vec<Diagnostic> {
@@ -25,7 +25,7 @@ pub fn validate_file(
         file_path,
         module_path: module_path.clone(),
         symbols,
-        src_dir,
+        owned_dir,
         source_lines: None,
         crate_name,
         local_scopes: Vec::new(),
@@ -104,7 +104,8 @@ struct ValidationVisitor<'a> {
     /// The file's module, or the inline module while inside its body.
     module_path: ModulePath,
     symbols: &'a SymbolTable,
-    src_dir: &'a Path,
+    /// The directory `mod x;` declarations of the file are resolved against.
+    owned_dir: &'a Path,
     /// Lazily loaded source lines for fix generation
     source_lines: Option<Vec<String>>,
     /// The crate's own name (from Cargo.toml), so `use <name>::...` is treated as `use crate::...`
@@ -178,7 +179,7 @@ impl<'a> ValidationVisitor<'a> {
 
                 let mod_name = m.ident.to_string();
                 let resolved =
-                    discovery::resolve_mod_file(self.src_dir, &self.module_path, &mod_name);
+                    discovery::resolve_mod_file(self.file_path, self.owned_dir, false, m);
 
                 if resolved.is_none() {
                     let span = m.ident.span();
@@ -451,6 +452,7 @@ impl<'a> ValidationVisitor<'a> {
         };
         for scope in &self.local_scopes {
             if scope.imports.iter().any(|i| i.name == name)
+                || scope.names.iter().any(|n| n == name)
                 || scope.globs.iter().any(|g| glob_may_bring(g))
             {
                 return true;
@@ -462,12 +464,17 @@ impl<'a> ValidationVisitor<'a> {
         ) {
             return true;
         }
-        symbols
+        self.module_uses()
+            .any(|u| if u.is_glob { glob_may_bring(&u.path) } else { u.alias == name })
+    }
+
+    /// The `use` items of the current module, including inline modules' own.
+    fn module_uses(&self) -> impl Iterator<Item = &UseInfo> {
+        self.symbols
             .modules
             .values()
             .flat_map(|m| m.uses.iter())
             .filter(|u| u.module == self.module_path)
-            .any(|u| if u.is_glob { glob_may_bring(&u.path) } else { u.alias == name })
     }
 
     /// Check if a `use` path resolves within the crate.
@@ -718,6 +725,7 @@ impl<'a> ValidationVisitor<'a> {
         let symbols = self.symbols;
         let mut imported = false;
         for scope in self.local_scopes.iter().rev() {
+            imported |= scope.names.iter().any(|n| n == name);
             for import in scope.imports.iter().filter(|i| i.name == name) {
                 imported = true;
                 let item = symbols
@@ -990,9 +998,13 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     fn visit_block(&mut self, node: &'ast syn::Block) {
         let mut scope = LocalScope::default();
         for stmt in &node.stmts {
-            if let syn::Stmt::Item(syn::Item::Use(u)) = stmt {
+            let syn::Stmt::Item(item) = stmt else {
+                continue;
+            };
+            if let syn::Item::Use(u) = item {
                 collect_local_imports(&u.tree, &mut Vec::new(), &mut scope);
             }
+            scope.names.extend(declared_item_name(item));
         }
         self.validator.local_scopes.push(scope);
         for stmt in &node.stmts {
@@ -1013,9 +1025,60 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
         syn::visit::visit_item_mod(self, node);
         self.validator.module_path = outer;
     }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        self.with_generics(&node.sig.generics, |v| syn::visit::visit_item_fn(v, node));
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_item_impl(v, node));
+    }
+
+    fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_item_struct(v, node));
+    }
+
+    fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_item_enum(v, node));
+    }
+
+    fn visit_item_union(&mut self, node: &'ast syn::ItemUnion) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_item_union(v, node));
+    }
+
+    fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_item_trait(v, node));
+    }
+
+    fn visit_item_type(&mut self, node: &'ast syn::ItemType) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_item_type(v, node));
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.with_generics(&node.sig.generics, |v| syn::visit::visit_impl_item_fn(v, node));
+    }
+
+    fn visit_impl_item_type(&mut self, node: &'ast syn::ImplItemType) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_impl_item_type(v, node));
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+        self.with_generics(&node.sig.generics, |v| syn::visit::visit_trait_item_fn(v, node));
+    }
+
+    fn visit_trait_item_type(&mut self, node: &'ast syn::TraitItemType) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_trait_item_type(v, node));
+    }
 }
 
 impl<'a, 'b> RefVisitor<'a, 'b> {
+    fn with_generics(&mut self, generics: &syn::Generics, visit: impl FnOnce(&mut Self)) {
+        let scope = LocalScope { names: generic_param_names(generics), ..LocalScope::default() };
+        self.validator.local_scopes.push(scope);
+        visit(self);
+        self.validator.local_scopes.pop();
+    }
+
     /// E0433 for an expression or type path whose module part names nothing in the crate.
     fn check_path_modules(&mut self, path: &syn::Path) {
         let names: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
@@ -1117,7 +1180,9 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     /// Generates a Fix (insert use statement) when there's a single unambiguous candidate,
     /// or uses smart import resolution when there are multiple candidates.
     fn check_type_in_scope(&mut self, name: &str, span: proc_macro2::Span) {
-        let in_scope = !matches!(self.validator.lookup_local(name), LocalLookup::None)
+        let in_scope = PRELUDE_NAMES.contains(&name)
+            || !matches!(self.validator.lookup_local(name), LocalLookup::None)
+            || self.validator.module_uses().any(|u| !u.is_glob && u.alias == name)
             || self.validator.lookup_in_scope(name).is_some();
 
         if in_scope {
@@ -1186,7 +1251,49 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
 struct LocalScope {
     imports: Vec<LocalImport>,
     globs: Vec<Vec<String>>,
+    /// Names bound without a path to resolve: generic parameters, items declared in a block.
+    names: Vec<String>,
 }
+
+fn generic_param_names(generics: &syn::Generics) -> Vec<String> {
+    generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            syn::GenericParam::Type(t) => Some(t.ident.to_string()),
+            syn::GenericParam::Const(c) => Some(c.ident.to_string()),
+            syn::GenericParam::Lifetime(_) => None,
+        })
+        .collect()
+}
+
+fn declared_item_name(item: &syn::Item) -> Option<String> {
+    let ident = match item {
+        syn::Item::Const(i) => &i.ident,
+        syn::Item::Enum(i) => &i.ident,
+        syn::Item::Fn(i) => &i.sig.ident,
+        syn::Item::Mod(i) => &i.ident,
+        syn::Item::Static(i) => &i.ident,
+        syn::Item::Struct(i) => &i.ident,
+        syn::Item::Trait(i) => &i.ident,
+        syn::Item::TraitAlias(i) => &i.ident,
+        syn::Item::Type(i) => &i.ident,
+        syn::Item::Union(i) => &i.ident,
+        _ => return None,
+    };
+    Some(ident.to_string())
+}
+
+/// Names the std prelude and the language bind in every module.
+const PRELUDE_NAMES: &[&str] = &[
+    "Self", "Option", "Some", "None", "Result", "Ok", "Err", "Vec", "String", "Box",
+    "Copy", "Send", "Sized", "Sync", "Unpin", "Drop", "Fn", "FnMut", "FnOnce",
+    "Clone", "Eq", "PartialEq", "Ord", "PartialOrd", "Default", "AsRef", "AsMut", "Into",
+    "From", "ToOwned", "ToString", "TryFrom", "TryInto", "FromIterator", "Iterator",
+    "IntoIterator", "DoubleEndedIterator", "ExactSizeIterator", "Extend",
+    "bool", "char", "str", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize",
+    "u8", "u16", "u32", "u64", "u128", "usize",
+];
 
 struct LocalImport {
     name: String,

@@ -8,6 +8,7 @@ pub mod fixer;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use discovery::ModuleFile;
 use types::*;
 
 struct CargoInfo {
@@ -64,7 +65,6 @@ fn collect_extern_crates(ast: &syn::File, names: &mut HashSet<String>) {
 ///   If None, all files are validated.
 pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> AnalysisResult {
     let crate_files = discovery::discover_crate(crate_root);
-    let src_dir = crate_root.join("src");
 
     // Determine which files to check
     let files_to_check: Vec<(&ModulePath, &PathBuf)> = if let Some(changed) = changed_files {
@@ -72,10 +72,15 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
         crate_files
             .files
             .iter()
+            .map(|(module_path, file)| (module_path, &file.path))
             .filter(|(_, path)| changed_set.contains(path))
             .collect()
     } else {
-        crate_files.files.iter().collect()
+        crate_files
+            .files
+            .iter()
+            .map(|(module_path, file)| (module_path, &file.path))
+            .collect()
     };
 
     // ── Pass 1: Syntax validation ──
@@ -129,7 +134,7 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
     // Step 1: Build the symbol table from ALL files in the crate
     let mut symbol_table = SymbolTable::new();
 
-    for (module_path, file_path) in &crate_files.files {
+    for (module_path, ModuleFile { path: file_path, .. }) in &crate_files.files {
         let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
             Err(_) => continue,
@@ -157,7 +162,7 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
             file_path,
             module_path,
             &symbol_table,
-            &src_dir,
+            &crate_files.files[*module_path].owned_dir,
             crate_name.as_deref(),
             external_crates.as_ref(),
         );

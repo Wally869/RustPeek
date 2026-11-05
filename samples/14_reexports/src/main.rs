@@ -22,6 +22,10 @@ mod variant_reexports;
 mod glob_private_names;
 mod expr_privacy;
 mod known_uses;
+mod shadowed_names;
+mod nested_path;
+#[path = "path_mapped/real_name.rs"]
+mod renamed;
 use crate::crate_vis::C;
 use crate::inline_mods::hub::Packet;
 use crate::inline_mods::named::Frame;

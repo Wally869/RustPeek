@@ -1,137 +1,125 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 use crate::types::ModulePath;
 
-/// Discovered .rs file mapped to its module path
-#[derive(Debug)]
-pub struct CrateFiles {
-    /// Map from module path to file path
-    pub files: HashMap<ModulePath, PathBuf>,
-    /// The crate root directory
-    pub root: PathBuf,
+/// A module's source file and the directory its `mod x;` declarations are resolved against.
+#[derive(Debug, Clone)]
+pub struct ModuleFile {
+    pub path: PathBuf,
+    pub owned_dir: PathBuf,
 }
 
-/// Discover all .rs files in a crate and map them to module paths.
+/// The crate's module files, found by following `mod` declarations from the crate root.
+#[derive(Debug)]
+pub struct CrateFiles {
+    pub files: HashMap<ModulePath, ModuleFile>,
+}
+
 pub fn discover_crate(root: &Path) -> CrateFiles {
     let src_dir = root.join("src");
     let mut files = HashMap::new();
 
-    // Find the crate root file
-    let lib_rs = src_dir.join("lib.rs");
-    let main_rs = src_dir.join("main.rs");
-
-    let crate_root = if lib_rs.exists() {
-        lib_rs
-    } else if main_rs.exists() {
-        main_rs
-    } else {
-        return CrateFiles {
-            files,
-            root: root.to_path_buf(),
-        };
+    let Some(crate_root) = ["lib.rs", "main.rs"]
+        .iter()
+        .map(|name| src_dir.join(name))
+        .find(|path| path.exists())
+    else {
+        return CrateFiles { files };
     };
 
-    // Add the crate root
-    files.insert(ModulePath::root(), crate_root);
+    let root_file = ModuleFile { path: crate_root, owned_dir: src_dir };
+    follow_declarations(&root_file, ModulePath::root(), &mut files, &mut Vec::new());
+    files.insert(ModulePath::root(), root_file);
+    CrateFiles { files }
+}
 
-    // Walk the src directory for all .rs files
-    for entry in WalkDir::new(&src_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().is_some_and(|ext| ext == "rs")
-                && e.file_type().is_file()
-        })
-    {
-        let path = entry.path().to_path_buf();
+fn follow_declarations(
+    file: &ModuleFile,
+    module_path: ModulePath,
+    files: &mut HashMap<ModulePath, ModuleFile>,
+    ancestors: &mut Vec<PathBuf>,
+) {
+    let Ok(source) = std::fs::read_to_string(&file.path) else {
+        return;
+    };
+    // A syntax error is reported by the syntax pass on this file.
+    let Some(ast) = crate::parser::parse_file(&source) else {
+        return;
+    };
+    ancestors.push(file.path.clone());
+    follow_items(&ast.items, file, &file.owned_dir, false, &module_path, files, ancestors);
+    ancestors.pop();
+}
 
-        // Skip crate root files, already handled
-        if path == src_dir.join("lib.rs") || path == src_dir.join("main.rs") {
+fn follow_items(
+    items: &[syn::Item],
+    file: &ModuleFile,
+    block_dir: &Path,
+    inside_inline_mod: bool,
+    module_path: &ModulePath,
+    files: &mut HashMap<ModulePath, ModuleFile>,
+    ancestors: &mut Vec<PathBuf>,
+) {
+    for item in items {
+        let syn::Item::Mod(m) = item else {
+            continue;
+        };
+        let child_path = module_path.child(&m.ident.to_string());
+        if let Some((_, inner)) = &m.content {
+            let inner_dir = block_dir.join(inline_dir_name(m));
+            follow_items(inner, file, &inner_dir, true, &child_path, files, ancestors);
             continue;
         }
-
-        // Convert file path to module path
-        if let Some(module_path) = file_to_module_path(&src_dir, &path) {
-            files.insert(module_path, path);
+        let Some(child) = resolve_mod_file(&file.path, block_dir, inside_inline_mod, m) else {
+            continue;
+        };
+        if files.contains_key(&child_path) || ancestors.contains(&child.path) {
+            continue;
         }
-    }
-
-    CrateFiles {
-        files,
-        root: root.to_path_buf(),
+        files.insert(child_path.clone(), child.clone());
+        follow_declarations(&child, child_path, files, ancestors);
     }
 }
 
-/// Convert a file path relative to src/ into a module path.
-///
-/// Examples:
-///   src/parser.rs         -> crate::parser
-///   src/parser/mod.rs     -> crate::parser
-///   src/parser/utils.rs   -> crate::parser::utils
-fn file_to_module_path(src_dir: &Path, file: &Path) -> Option<ModulePath> {
-    let relative = file.strip_prefix(src_dir).ok()?;
-    let mut segments = vec!["crate".to_string()];
-
-    let components: Vec<_> = relative.components().collect();
-
-    for (i, component) in components.iter().enumerate() {
-        let name = component.as_os_str().to_str()?;
-
-        if i == components.len() - 1 {
-            // Last component is the filename
-            let stem = Path::new(name).file_stem()?.to_str()?;
-            if stem != "mod" {
-                segments.push(stem.to_string());
-            }
-        } else {
-            segments.push(name.to_string());
-        }
-    }
-
-    Some(ModulePath(segments))
+/// The directory name an inline `mod x { }` adds to its children's lookup directory.
+fn inline_dir_name(m: &syn::ItemMod) -> PathBuf {
+    path_attribute(m).map_or_else(|| PathBuf::from(m.ident.to_string()), PathBuf::from)
 }
 
-/// Resolve a `mod foo;` declaration to its file path.
-/// Returns the path if the file exists, None otherwise.
-pub fn resolve_mod_file(src_dir: &Path, parent_module: &ModulePath, mod_name: &str) -> Option<PathBuf> {
-    // Build the directory path for the parent module
-    let mut dir = src_dir.to_path_buf();
-    for segment in &parent_module.0[1..] {
-        // skip "crate"
-        dir = dir.join(segment);
+fn path_attribute(m: &syn::ItemMod) -> Option<String> {
+    m.attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("path") {
+            return None;
+        }
+        match &attr.meta.require_name_value().ok()?.value {
+            syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) => Some(s.value()),
+            _ => None,
+        }
+    })
+}
+
+/// Map a `mod x;` declaration to its file, following rustc: `#[path]` is relative to the
+/// declaring file's directory at the top level of the file, and to `block_dir` inside an
+/// inline module. Without it the file is `{block_dir}/x.rs` or `{block_dir}/x/mod.rs`.
+/// `block_dir` starts as the declaring module's owned directory.
+pub(crate) fn resolve_mod_file(
+    declaring_file: &Path,
+    block_dir: &Path,
+    inside_inline_mod: bool,
+    m: &syn::ItemMod,
+) -> Option<ModuleFile> {
+    if let Some(attr_path) = path_attribute(m) {
+        let base = if inside_inline_mod { block_dir } else { declaring_file.parent()? };
+        let path = base.join(attr_path);
+        let owned_dir = path.parent()?.to_path_buf();
+        return path.is_file().then_some(ModuleFile { path, owned_dir });
     }
-
-    // Check foo.rs (sibling style)
-    let sibling = dir.with_extension("").join(format!("{mod_name}.rs"));
-
-    // For the root module, check directly in src/
-    let direct = if parent_module.0.len() == 1 {
-        src_dir.join(format!("{mod_name}.rs"))
-    } else {
-        // For nested modules, the parent's directory is named after the parent
-        let parent_name = parent_module.last();
-        let parent_dir = dir.parent()?.join(parent_name);
-        parent_dir.join(format!("{mod_name}.rs"))
-    };
-
-    // Check foo/mod.rs style
-    let mod_style = if parent_module.0.len() == 1 {
-        src_dir.join(mod_name).join("mod.rs")
-    } else {
-        let parent_name = parent_module.last();
-        let parent_dir = dir.parent()?.join(parent_name);
-        parent_dir.join(mod_name).join("mod.rs")
-    };
-
-    if direct.exists() {
-        Some(direct)
-    } else if mod_style.exists() {
-        Some(mod_style)
-    } else if sibling.exists() {
-        Some(sibling)
-    } else {
-        None
+    let name = m.ident.to_string();
+    let flat = block_dir.join(format!("{name}.rs"));
+    if flat.is_file() {
+        return Some(ModuleFile { path: flat, owned_dir: block_dir.join(&name) });
     }
+    let nested = block_dir.join(&name).join("mod.rs");
+    nested.is_file().then(|| ModuleFile { owned_dir: block_dir.join(&name), path: nested })
 }
