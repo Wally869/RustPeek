@@ -14,12 +14,10 @@ pub fn validate_file(
     symbols: &SymbolTable,
     owned_dir: &Path,
     crate_name: Option<&str>,
-    external_crates: Option<&HashSet<String>>,
 ) -> Vec<Diagnostic> {
     let mut macro_modules = HashSet::new();
     collect_macro_modules(&ast.items, module_path, &mut macro_modules);
     let mut visitor = ValidationVisitor {
-        external_crates,
         macro_modules,
         diagnostics: Vec::new(),
         file_path,
@@ -111,8 +109,6 @@ struct ValidationVisitor<'a> {
     /// The crate's own name (from Cargo.toml), so `use <name>::...` is treated as `use crate::...`
     crate_name: Option<&'a str>,
     local_scopes: Vec<LocalScope>,
-    /// None when the crate's dependencies are unknown.
-    external_crates: Option<&'a HashSet<String>>,
     /// Modules with an item-level macro invocation, which may define any item.
     macro_modules: HashSet<ModulePath>,
 }
@@ -308,6 +304,7 @@ impl<'a> ValidationVisitor<'a> {
             None => true,
             Some(PathStop::NotModule { index }) if index == last => true,
             Some(PathStop::Missing { index }) if index == last => false,
+            Some(PathStop::External { .. }) => return GlobOutcome::Resolved,
             Some(_) => return GlobOutcome::Unresolved,
         };
         if walk.first_private.is_some_and(|index| index < last) {
@@ -375,7 +372,7 @@ impl<'a> ValidationVisitor<'a> {
     /// imported name) names no crate and nothing in scope. Off when the dependency
     /// list is unknown.
     fn is_unknown_external_crate(&self, prefix: &[String]) -> bool {
-        if self.external_crates.is_none() {
+        if self.symbols.external_crates.is_none() {
             return false;
         }
         let Some(first) = prefix.first() else {
@@ -411,7 +408,7 @@ impl<'a> ValidationVisitor<'a> {
 
     /// A crate name the current crate can use without `extern crate`.
     fn is_known_crate(&self, name: &str) -> bool {
-        is_sysroot_crate(name) || self.external_crates.is_some_and(|c| c.contains(name))
+        self.symbols.is_known_crate(name)
     }
 
     /// Whether `name` is brought into the current module or its enclosing blocks by an item,
@@ -523,10 +520,11 @@ impl<'a> ValidationVisitor<'a> {
 
         let item_name = &resolved[resolved.len() - 1];
         let module_segments = &resolved[..resolved.len() - 1];
-        let resolved_module = symbols
-            .walk_path(module_segments, &self.module_path, self.crate_name)
-            .module()
-            .filter(|m| symbols.module_exists(&m.path));
+        let module_walk = symbols.walk_path(module_segments, &self.module_path, self.crate_name);
+        if matches!(module_walk.stop, Some(PathStop::External { .. })) {
+            return;
+        }
+        let resolved_module = module_walk.module().filter(|m| symbols.module_exists(&m.path));
 
         if let Some(module) = resolved_module {
             let module_path = module.path;
@@ -541,6 +539,9 @@ impl<'a> ValidationVisitor<'a> {
                 self.crate_name,
             );
 
+            if matches!(found, Resolved::External) {
+                return;
+            }
             if is_private_step(module.accessible, found) {
                 self.diagnostics.push(Diagnostic {
                     severity: Severity::Error,
@@ -633,7 +634,7 @@ impl<'a> ValidationVisitor<'a> {
             self.crate_name,
         );
         let (message, code) = match found {
-            Resolved::NotFound => return false,
+            Resolved::NotFound | Resolved::External => return false,
             Resolved::Inaccessible(item) if item.kind == ItemKind::Enum => {
                 (format!("enum `{}` is private", enum_name), "E0603")
             }
@@ -1103,7 +1104,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
             self.validator.crate_name,
         );
         let stop_index = match walk.stop {
-            Some(PathStop::Unrooted) => return,
+            Some(PathStop::Unrooted | PathStop::External { .. }) => return,
             Some(PathStop::Missing { index } | PathStop::NotModule { index }) => Some(index),
             None => None,
         };
@@ -1350,12 +1351,6 @@ fn reexport_message(name: &str, item_scope: &ModulePath) -> String {
     } else {
         format!("`{name}` is private, and cannot be re-exported")
     }
-}
-
-/// Sysroot crates in the extern prelude of every crate; `alloc` and `test` need
-/// `extern crate`.
-fn is_sysroot_crate(name: &str) -> bool {
-    matches!(name, "std" | "core" | "proc_macro")
 }
 
 fn is_crate_path(path: &[String], crate_name: Option<&str>) -> bool {

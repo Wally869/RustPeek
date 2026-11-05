@@ -150,7 +150,7 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
         symbol_table.modules.insert(module_path.clone(), module_info);
     }
 
-    let external_crates = dependencies.map(|mut deps| {
+    symbol_table.external_crates = dependencies.map(|mut deps| {
         deps.extend(extern_crates);
         deps
     });
@@ -164,7 +164,6 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
             &symbol_table,
             &crate_files.files[*module_path].owned_dir,
             crate_name.as_deref(),
-            external_crates.as_ref(),
         );
         all_diagnostics.extend(diagnostics);
     }
