@@ -26,7 +26,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                     .filter_map(|f| {
                         f.ident.as_ref().map(|name| FieldInfo {
                             name: name.to_string(),
-                            vis: Vis::from_syn(&f.vis),
+                            vis: Vis::from_syn(&f.vis, module_path),
                         })
                     })
                     .collect(),
@@ -36,7 +36,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: s.ident.to_string(),
                 kind: ItemKind::Struct,
-                vis: Vis::from_syn(&s.vis),
+                vis: Vis::from_syn(&s.vis, module_path),
                 module: module_path.clone(),
                 fields,
                 variants: Vec::new(),
@@ -59,7 +59,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                                 .filter_map(|f| {
                                     f.ident.as_ref().map(|name| FieldInfo {
                                         name: name.to_string(),
-                                        vis: Vis::from_syn(&f.vis),
+                                        vis: Vis::from_syn(&f.vis, module_path),
                                     })
                                 })
                                 .collect(),
@@ -81,7 +81,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: e.ident.to_string(),
                 kind: ItemKind::Enum,
-                vis: Vis::from_syn(&e.vis),
+                vis: Vis::from_syn(&e.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
                 variants,
@@ -93,7 +93,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: t.ident.to_string(),
                 kind: ItemKind::Trait,
-                vis: Vis::from_syn(&t.vis),
+                vis: Vis::from_syn(&t.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
                 variants: Vec::new(),
@@ -106,7 +106,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: f.sig.ident.to_string(),
                 kind: ItemKind::Function,
-                vis: Vis::from_syn(&f.vis),
+                vis: Vis::from_syn(&f.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
                 variants: Vec::new(),
@@ -118,7 +118,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: t.ident.to_string(),
                 kind: ItemKind::TypeAlias,
-                vis: Vis::from_syn(&t.vis),
+                vis: Vis::from_syn(&t.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
                 variants: Vec::new(),
@@ -130,7 +130,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: c.ident.to_string(),
                 kind: ItemKind::Const,
-                vis: Vis::from_syn(&c.vis),
+                vis: Vis::from_syn(&c.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
                 variants: Vec::new(),
@@ -142,7 +142,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: s.ident.to_string(),
                 kind: ItemKind::Static,
-                vis: Vis::from_syn(&s.vis),
+                vis: Vis::from_syn(&s.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
                 variants: Vec::new(),
@@ -160,7 +160,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: mod_name.clone(),
                     kind: ItemKind::Module,
-                    vis: Vis::from_syn(&m.vis),
+                    vis: Vis::from_syn(&m.vis, module_path),
                     module: module_path.clone(),
                     fields: Vec::new(),
                     variants: Vec::new(),
@@ -185,7 +185,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: mod_name,
                     kind: ItemKind::Module,
-                    vis: Vis::from_syn(&m.vis),
+                    vis: Vis::from_syn(&m.vis, module_path),
                     module: module_path.clone(),
                     fields: Vec::new(),
                     variants: Vec::new(),
@@ -195,7 +195,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
         }
 
         syn::Item::Use(u) => {
-            let vis = Vis::from_syn(&u.vis);
+            let vis = Vis::from_syn(&u.vis, module_path);
             collect_use_tree(&u.tree, &mut Vec::new(), info, &vis, module_path);
         }
 
@@ -220,7 +220,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                             let param_count = count_fn_params(&method.sig);
                             Some(MethodInfo {
                                 name: method.sig.ident.to_string(),
-                                vis: Vis::from_syn(&method.vis),
+                                vis: Vis::from_syn(&method.vis, module_path),
                                 param_count,
                                 has_self,
                             })
@@ -242,7 +242,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: ident.to_string(),
                     kind: ItemKind::Macro,
-                    vis: Vis::Private, // macro_rules! visibility is complex
+                    vis: Vis::Restricted(module_path.clone()), // macro_rules! visibility is complex
                     module: module_path.clone(),
                     fields: Vec::new(),
                     variants: Vec::new(),

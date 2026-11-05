@@ -46,45 +46,42 @@ impl std::fmt::Display for ModulePath {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Vis {
     Public,
-    PubCrate,
-    PubSuper,
-    Private,
+    /// Visible in this absolute module and its descendants.
+    Restricted(ModulePath),
 }
 
 impl Vis {
-    pub fn from_syn(vis: &syn::Visibility) -> Self {
+    pub fn from_syn(vis: &syn::Visibility, defining_module: &ModulePath) -> Self {
         match vis {
             syn::Visibility::Public(_) => Vis::Public,
             syn::Visibility::Restricted(r) => {
-                let path = &r.path;
-                if path.is_ident("crate") {
-                    Vis::PubCrate
-                } else if path.is_ident("super") {
-                    Vis::PubSuper
-                } else {
-                    Vis::Private
-                }
+                Vis::Restricted(resolve_vis_path(&r.path, defining_module))
             }
-            syn::Visibility::Inherited => Vis::Private,
+            syn::Visibility::Inherited => Vis::Restricted(defining_module.clone()),
         }
     }
 
-    /// Can this item be accessed from `accessor_module` when it's defined in `defining_module`?
-    pub fn accessible_from(&self, defining_module: &ModulePath, accessor_module: &ModulePath) -> bool {
+    pub fn accessible_from(&self, accessor_module: &ModulePath) -> bool {
         match self {
             Vis::Public => true,
-            Vis::PubCrate => true,
-            Vis::PubSuper => {
-                if let Some(parent) = defining_module.parent() {
-                    // Accessible from the parent module and its children
-                    accessor_module.0.starts_with(&parent.0)
-                } else {
-                    false
-                }
-            }
-            Vis::Private => accessor_module.0.starts_with(&defining_module.0),
+            Vis::Restricted(module) => accessor_module.0.starts_with(&module.0),
         }
     }
+}
+
+// A `super` past the crate root is a rustc error; it stays at the root here.
+fn resolve_vis_path(path: &syn::Path, defining_module: &ModulePath) -> ModulePath {
+    let mut current = defining_module.clone();
+    for (i, seg) in path.segments.iter().enumerate() {
+        let name = seg.ident.to_string();
+        match name.as_str() {
+            "crate" if i == 0 => current = ModulePath::root(),
+            "self" if i == 0 => {}
+            "super" => current = current.parent().unwrap_or(current),
+            _ => current = current.child(&name),
+        }
+    }
+    current
 }
 
 /// Outcome of resolving a name from an accessor module.
@@ -328,7 +325,7 @@ impl SymbolTable {
             return Resolved::NotFound;
         };
         if let Some(item) = info.items.iter().find(|i| i.name == name && i.module == *module) {
-            return Resolved::of(item, item.vis.accessible_from(&item.module, accessor));
+            return Resolved::of(item, item.vis.accessible_from(accessor));
         }
 
         let mut inaccessible = None;
@@ -339,7 +336,7 @@ impl SymbolTable {
             let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
                 continue;
             };
-            let reachable = use_info.vis.accessible_from(module, accessor);
+            let reachable = use_info.vis.accessible_from(accessor);
             match self.resolve_abs_item(&abs, module, accessor, crate_name, in_progress) {
                 Resolved::Accessible(item) if reachable => return Resolved::Accessible(item),
                 Resolved::Accessible(item) | Resolved::Inaccessible(item) => {
@@ -367,7 +364,7 @@ impl SymbolTable {
                     match self.resolve_item_in(&target.path, name, accessor, crate_name, in_progress) {
                         Resolved::Accessible(item)
                             if target.accessible
-                                && use_info.vis.accessible_from(module, accessor) =>
+                                && use_info.vis.accessible_from(accessor) =>
                         {
                             return Resolved::Accessible(item);
                         }
