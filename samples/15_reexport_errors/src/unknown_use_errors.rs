@@ -17,6 +17,7 @@ pub type Alias = S;
 
 use S::new;
 use Tr::method;
+use Tr::missing_member;
 use Alias::new as alias_new;
 
 fn in_body() {

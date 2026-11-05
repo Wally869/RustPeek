@@ -98,7 +98,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 has_value_ctor: false,
                 vis: Vis::from_syn(&t.vis, module_path),
                 module: module_path.clone(),
-                fields: Vec::new(),
+                fields: trait_members(t, &Vis::from_syn(&t.vis, module_path)),
                 variants: Vec::new(),
                 param_count: None,
             });
@@ -263,6 +263,20 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
 
         _ => {}
     }
+}
+
+/// The associated items of a trait (fns, consts, types), with the trait's visibility.
+fn trait_members(t: &syn::ItemTrait, vis: &Vis) -> Vec<FieldInfo> {
+    t.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::TraitItem::Fn(f) => Some(&f.sig.ident),
+            syn::TraitItem::Const(c) => Some(&c.ident),
+            syn::TraitItem::Type(ty) => Some(&ty.ident),
+            _ => None,
+        })
+        .map(|ident| FieldInfo { name: ident.to_string(), vis: vis.clone() })
+        .collect()
 }
 
 /// Count function parameters, excluding `self`.

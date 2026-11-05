@@ -644,12 +644,15 @@ impl<'a> ValidationVisitor<'a> {
                     return false;
                 }
                 if item.kind == ItemKind::Trait {
-                    // Trait members are not recorded, so a missing member (rustc: E0432)
-                    // is not told apart from an existing one.
-                    (
-                        "`use` associated items of traits is unstable".to_string(),
-                        "E0658",
-                    )
+                    // rustc: E0658 for an existing member, E0432 for a missing one.
+                    if item.fields.iter().any(|m| &m.name == variant_name) {
+                        (
+                            "`use` associated items of traits is unstable".to_string(),
+                            "E0658",
+                        )
+                    } else {
+                        (format!("unresolved import `{}`", path.join("::")), "E0432")
+                    }
                 } else if matches!(item.kind, ItemKind::Macro | ItemKind::Module) {
                     return false;
                 } else if item.kind != ItemKind::Enum {

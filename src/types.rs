@@ -201,7 +201,7 @@ pub struct ItemInfo {
     pub kind: ItemKind,
     pub vis: Vis,
     pub module: ModulePath,
-    /// Fields for structs
+    /// Fields for structs; associated items (fns, consts, types) for traits
     pub fields: Vec<FieldInfo>,
     /// Variants for enums
     pub variants: Vec<VariantInfo>,
