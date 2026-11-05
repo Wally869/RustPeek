@@ -14,6 +14,7 @@ mod fn_uses;
 mod qualified_paths;
 mod bare_globs;
 mod reexport_chain;
+mod pub_in_nested;
 use crate::crate_vis::C;
 use crate::inline_mods::hub::Packet;
 use crate::inline_mods::named::Frame;

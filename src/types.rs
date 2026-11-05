@@ -55,7 +55,11 @@ impl Vis {
         match vis {
             syn::Visibility::Public(_) => Vis::Public,
             syn::Visibility::Restricted(r) => {
-                Vis::Restricted(resolve_vis_path(&r.path, defining_module))
+                // An unresolvable path is reported as E0433 by the validator; the item stays usable.
+                match resolve_vis_path(&r.path, defining_module) {
+                    Some(module) => Vis::Restricted(module),
+                    None => Vis::Public,
+                }
             }
             syn::Visibility::Inherited => Vis::Restricted(defining_module.clone()),
         }
@@ -69,19 +73,19 @@ impl Vis {
     }
 }
 
-// A `super` past the crate root is a rustc error; it stays at the root here.
-fn resolve_vis_path(path: &syn::Path, defining_module: &ModulePath) -> ModulePath {
+/// None when a `super` climbs past the crate root (rustc E0433).
+pub fn resolve_vis_path(path: &syn::Path, defining_module: &ModulePath) -> Option<ModulePath> {
     let mut current = defining_module.clone();
     for (i, seg) in path.segments.iter().enumerate() {
         let name = seg.ident.to_string();
         match name.as_str() {
             "crate" if i == 0 => current = ModulePath::root(),
             "self" if i == 0 => {}
-            "super" => current = current.parent().unwrap_or(current),
+            "super" => current = current.parent()?,
             _ => current = current.child(&name),
         }
     }
-    current
+    Some(current)
 }
 
 /// State of one resolution: the lookups in progress (cycle guard) and the visibility of each

@@ -29,7 +29,60 @@ pub fn validate_file(
     visitor.validate_use_statements(ast);
     visitor.validate_references(ast);
 
+    let mut vis_check = VisPathCheck {
+        diagnostics: &mut visitor.diagnostics,
+        file_path,
+        module_path: module_path.clone(),
+    };
+    vis_check.visit_file(ast);
+
     visitor.diagnostics
+}
+
+struct VisPathCheck<'a> {
+    diagnostics: &'a mut Vec<Diagnostic>,
+    file_path: &'a Path,
+    module_path: ModulePath,
+}
+
+impl<'ast> Visit<'ast> for VisPathCheck<'_> {
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        self.visit_visibility(&m.vis);
+        if let Some((_, inner)) = &m.content {
+            let child = self.module_path.child(&m.ident.to_string());
+            let outer = std::mem::replace(&mut self.module_path, child);
+            for item in inner {
+                self.visit_item(item);
+            }
+            self.module_path = outer;
+        }
+    }
+
+    fn visit_vis_restricted(&mut self, r: &'ast syn::VisRestricted) {
+        if resolve_vis_path(&r.path, &self.module_path).is_some() {
+            return;
+        }
+        let path_text = r
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        let span = r.path.segments[0].ident.span();
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            file: self.file_path.to_path_buf(),
+            line: span.start().line,
+            column: span.start().column + 1,
+            message: format!(
+                "failed to resolve `{path_text}`: there are too many leading `super` keywords"
+            ),
+            error_code: Some("E0433".to_string()),
+            hint: None,
+            fix: None,
+        });
+    }
 }
 
 #[derive(PartialEq, Eq)]
