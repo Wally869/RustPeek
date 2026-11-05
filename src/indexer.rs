@@ -379,6 +379,7 @@ fn index_item_body(item: &syn::Item, module_path: &ModulePath, info: &mut Module
                 info.macro_modules.push(module_path.clone());
             }
             if let Some(ident) = &m.ident {
+                let exported = m.attrs.iter().any(|a| a.path().is_ident("macro_export"));
                 info.items.push(ItemInfo {
                     name: ident.to_string(),
                     kind: ItemKind::Macro,
@@ -386,7 +387,11 @@ fn index_item_body(item: &syn::Item, module_path: &ModulePath, info: &mut Module
                     alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: false,
-                    vis: Vis::Restricted(module_path.clone()), // macro_rules! visibility is complex
+                    vis: if exported {
+                        Vis::Public
+                    } else {
+                        Vis::Restricted(module_path.clone())
+                    },
                     module: module_path.clone(),
                     fields: Vec::new(),
                     variants: Vec::new(),

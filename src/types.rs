@@ -495,6 +495,19 @@ impl SymbolTable {
             return Resolved::of(chosen, accessible);
         }
 
+        // A `#[macro_export]` macro is a public item of the crate root, wherever it is defined.
+        if *module == ModulePath::root() {
+            let exported = self.modules.values().flat_map(|m| m.items.iter()).find(|i| {
+                i.name == name
+                    && i.kind == ItemKind::Macro
+                    && matches!(i.vis, Vis::Public)
+                    && namespace.admits(i)
+            });
+            if let Some(item) = exported {
+                return Resolved::Accessible(item);
+            }
+        }
+
         let mut inaccessible = None;
         let mut external = false;
         let mut reachable_external = false;
