@@ -99,6 +99,37 @@ fn path_attribute(m: &syn::ItemMod) -> Option<String> {
     })
 }
 
+/// Whether a `#[cfg_attr(cond, path = "..")]` is on the module: which file loads depends on
+/// cfg, which the tool does not evaluate.
+pub(crate) fn has_cfg_attr_path(m: &syn::ItemMod) -> bool {
+    m.attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg_attr")
+            && attr
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                )
+                .is_ok_and(|metas| metas.iter().skip(1).any(|meta| meta.path().is_ident("path")))
+    })
+}
+
+/// The `mod x;` declarations in `items` (inline modules included) whose file is unknown
+/// because of a `cfg_attr` path.
+pub(crate) fn unknown_file_modules(items: &[syn::Item], module_path: &ModulePath) -> Vec<ModulePath> {
+    let mut found = Vec::new();
+    for item in items {
+        let syn::Item::Mod(m) = item else {
+            continue;
+        };
+        let child_path = module_path.child(&m.ident.to_string());
+        match &m.content {
+            Some((_, inner)) => found.extend(unknown_file_modules(inner, &child_path)),
+            None if has_cfg_attr_path(m) => found.push(child_path),
+            None => {}
+        }
+    }
+    found
+}
+
 /// Map a `mod x;` declaration to its file, following rustc: `#[path]` is relative to the
 /// declaring file's directory at the top level of the file, and to `block_dir` inside an
 /// inline module. Without it the file is `{block_dir}/x.rs` or `{block_dir}/x/mod.rs`.
@@ -109,6 +140,9 @@ pub(crate) fn resolve_mod_file(
     inside_inline_mod: bool,
     m: &syn::ItemMod,
 ) -> Option<ModuleFile> {
+    if has_cfg_attr_path(m) {
+        return None;
+    }
     if let Some(attr_path) = path_attribute(m) {
         let base = if inside_inline_mod { block_dir } else { declaring_file.parent()? };
         let path = base.join(attr_path);

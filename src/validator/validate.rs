@@ -70,7 +70,10 @@ impl<'a> ValidationVisitor<'a> {
                 let resolved =
                     discovery::resolve_mod_file(self.file_path, self.owned_dir, false, m);
 
-                if resolved.is_none() && !self.has_cfg_twin(&ast.items, m) {
+                if resolved.is_none()
+                    && !discovery::has_cfg_attr_path(m)
+                    && !self.has_cfg_twin(&ast.items, m)
+                {
                     let span = m.ident.span();
                     self.diagnostics.push(Diagnostic {
                         severity: Severity::Error,

@@ -150,7 +150,10 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
         if *module_path == ModulePath::root() {
             collect_extern_crates(&ast, &mut extern_crates);
         }
-        let module_info = indexer::index_file(&ast, module_path, file_path);
+        let mut module_info = indexer::index_file(&ast, module_path, file_path);
+        module_info
+            .macro_modules
+            .extend(discovery::unknown_file_modules(&ast.items, module_path));
         symbol_table.modules.insert(module_path.clone(), module_info);
     }
 
