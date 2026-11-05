@@ -470,9 +470,10 @@ impl SymbolTable {
                 Resolved::NotFound => {}
             }
         }
+        // An item-level macro call in the module may define the name: not ours to check.
         match inaccessible {
             Some(item) => Resolved::Inaccessible(item),
-            None if external => Resolved::External,
+            None if external || self.has_macro_call(module) => Resolved::External,
             None => Resolved::NotFound,
         }
     }

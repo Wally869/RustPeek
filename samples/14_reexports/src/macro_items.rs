@@ -78,3 +78,33 @@ mod generated {
 
     pub fn take(_flag: Flags) {}
 }
+
+// Round 9: a named import or a path into a module whose macro call defines the item
+// (syn `ast_struct!`), and a module made by a macro (libc `prelude!`, `cfg_if!`).
+mod named_of_generated {
+    use crate::macro_items::generated::Flags;
+    use super::made::Made;
+
+    pub fn take(_f: Flags, _m: Made) -> super::made::Made {
+        crate::macro_items::made::Made::make()
+    }
+}
+
+macro_rules! make_mod {
+    ($name:ident) => {
+        mod $name {
+            pub struct Group;
+        }
+        use self::$name as imp;
+    };
+}
+
+mod with_made_mod {
+    make_mod!(sse2);
+    pub(crate) use self::imp::Group;
+    pub fn take(_g: self::sse2::Group) {}
+}
+
+pub fn use_made_mod(g: with_made_mod::Group) {
+    with_made_mod::take(g);
+}
