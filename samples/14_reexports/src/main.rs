@@ -34,6 +34,7 @@ mod expr_privacy;
 mod known_uses;
 mod shadowed_names;
 mod nested_path;
+mod lowercase_names;
 #[path = "path_mapped/real_name.rs"]
 mod renamed;
 use crate::crate_vis::C;
