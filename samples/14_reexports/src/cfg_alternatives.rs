@@ -77,3 +77,25 @@ impl Span {
         Span { lo: 0 }
     }
 }
+
+// Round 10 review: a parameter under `#[cfg]` makes the arity unknown (syn
+// `parse_binop_rhs`): the call with the cfg-off arity is valid.
+fn binop_rhs(input: u8, #[cfg(feature = "full")] allow_struct: bool, precedence: u8) -> u8 {
+    #[cfg(feature = "full")]
+    let _ = allow_struct;
+    input + precedence
+}
+
+pub fn call_binop_rhs() -> u8 {
+    binop_rhs(1, 2)
+}
+
+// Round 10 review: a `#[cfg] mod x;` pair without `#[path]`; both name the same file.
+#[cfg(feature = "full")]
+mod filemod;
+#[cfg(not(feature = "full"))]
+mod filemod;
+
+pub fn call_filemod() -> u8 {
+    filemod::value()
+}

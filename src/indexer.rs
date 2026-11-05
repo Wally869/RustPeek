@@ -197,7 +197,7 @@ fn index_item_body(item: &syn::Item, module_path: &ModulePath, info: &mut Module
                 module: module_path.clone(),
                 fields: Vec::new(),
                 variants: Vec::new(),
-                param_count: Some(param_count),
+                param_count,
             });
         }
 
@@ -451,11 +451,19 @@ fn trait_members(t: &syn::ItemTrait, vis: &Vis) -> Vec<FieldInfo> {
 }
 
 /// Count function parameters, excluding `self`.
-fn count_fn_params(sig: &syn::Signature) -> usize {
-    sig.inputs
-        .iter()
-        .filter(|arg| matches!(arg, syn::FnArg::Typed(_)))
-        .count()
+/// The number of non-`self` parameters; `None` when a parameter is under `#[cfg]`, since the
+/// tool cannot evaluate cfg and the arity is then unknown.
+fn count_fn_params(sig: &syn::Signature) -> Option<usize> {
+    let mut count = 0;
+    for arg in &sig.inputs {
+        if let syn::FnArg::Typed(typed) = arg {
+            if !cfg_conditions(&typed.attrs).is_empty() {
+                return None;
+            }
+            count += 1;
+        }
+    }
+    Some(count)
 }
 
 /// Extract the type name from a type expression (just the ident).

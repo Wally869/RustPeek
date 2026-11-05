@@ -321,8 +321,8 @@ pub struct ImplInfo {
 pub struct MethodInfo {
     pub name: String,
     pub vis: Vis,
-    /// Parameter count excluding self
-    pub param_count: usize,
+    /// Parameter count excluding self; `None` when a parameter is under `#[cfg]`
+    pub param_count: Option<usize>,
     pub has_self: bool,
 }
 
