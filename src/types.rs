@@ -113,6 +113,36 @@ pub struct ResolvedModule {
     pub accessible: bool,
 }
 
+/// Why a walk along an absolute path stopped before its end.
+#[derive(Debug, Clone, Copy)]
+pub enum PathStop {
+    /// The path does not start at `crate`.
+    Unrooted,
+    /// No item of that name at `index`.
+    Missing { index: usize },
+    /// The item at `index` is not a module.
+    NotModule { index: usize },
+}
+
+/// Outcome of walking an absolute path: the module reached, whether every module on the
+/// way is visible, the first segment not visible, and where the walk stopped, if it did.
+#[derive(Debug, Clone)]
+pub struct PathWalk {
+    pub reached: ModulePath,
+    pub accessible: bool,
+    pub first_private: Option<usize>,
+    pub stop: Option<PathStop>,
+}
+
+impl PathWalk {
+    /// The module the whole path names; `None` when the walk stopped.
+    pub fn module(self) -> Option<ResolvedModule> {
+        self.stop
+            .is_none()
+            .then(|| ResolvedModule { path: self.reached, accessible: self.accessible })
+    }
+}
+
 impl<'a> Resolved<'a> {
     fn of(item: &'a ItemInfo, accessible: bool) -> Self {
         if accessible { Resolved::Accessible(item) } else { Resolved::Inaccessible(item) }
@@ -318,7 +348,7 @@ impl SymbolTable {
         accessor: &ModulePath,
         crate_name: Option<&str>,
     ) -> Option<ResolvedModule> {
-        self.resolve_module_in(abs, accessor, crate_name, &mut Walk::default())
+        self.walk_path(abs, accessor, crate_name).module()
     }
 
     fn resolve_item_in(
@@ -386,7 +416,7 @@ impl SymbolTable {
             let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
                 continue;
             };
-            let Some(target) = self.resolve_module_in(&abs, module, crate_name, in_progress)
+            let Some(target) = self.walk_path_in(&abs, module, crate_name, in_progress).module()
             else {
                 continue;
             };
@@ -481,8 +511,9 @@ impl SymbolTable {
         let Some((name, module_part)) = abs.split_last() else {
             return Resolved::NotFound;
         };
-        let Some(module) =
-            self.resolve_module_in(module_part, path_accessor, crate_name, in_progress)
+        let Some(module) = self
+            .walk_path_in(module_part, path_accessor, crate_name, in_progress)
+            .module()
         else {
             return Resolved::NotFound;
         };
@@ -492,30 +523,55 @@ impl SymbolTable {
         }
     }
 
-    fn resolve_module_in(
+    /// Walk an absolute path segment by segment from the crate root, each segment a module,
+    /// and report where the walk stopped and which segment was the first not visible to
+    /// `accessor`. This is the only walk along path segments.
+    pub fn walk_path(
+        &self,
+        abs: &[String],
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+    ) -> PathWalk {
+        self.walk_path_in(abs, accessor, crate_name, &mut Walk::default())
+    }
+
+    fn walk_path_in(
         &self,
         abs: &[String],
         accessor: &ModulePath,
         crate_name: Option<&str>,
         in_progress: &mut Walk,
-    ) -> Option<ResolvedModule> {
+    ) -> PathWalk {
+        let mut walk = PathWalk {
+            reached: ModulePath::root(),
+            accessible: true,
+            first_private: None,
+            stop: None,
+        };
         if abs.first().map(String::as_str) != Some("crate") {
-            return None;
+            walk.stop = Some(PathStop::Unrooted);
+            return walk;
         }
-        let mut current = ModulePath::root();
-        let mut accessible = true;
-        for segment in &abs[1..] {
+        for (index, segment) in abs.iter().enumerate().skip(1) {
             let mark = in_progress.links.len();
-            let found = self.resolve_item_in(&current, segment, accessor, crate_name, in_progress);
+            let found =
+                self.resolve_item_in(&walk.reached, segment, accessor, crate_name, in_progress);
             in_progress.links.truncate(mark);
-            accessible &= matches!(found, Resolved::Accessible(_));
-            let item = found.item()?;
-            if item.kind != ItemKind::Module {
-                return None;
+            if matches!(found, Resolved::Inaccessible(_)) {
+                walk.accessible = false;
+                walk.first_private.get_or_insert(index);
             }
-            current = item.module.child(&item.name);
+            let Some(item) = found.item() else {
+                walk.stop = Some(PathStop::Missing { index });
+                return walk;
+            };
+            if item.kind != ItemKind::Module {
+                walk.stop = Some(PathStop::NotModule { index });
+                return walk;
+            }
+            walk.reached = item.module.child(&item.name);
         }
-        Some(ResolvedModule { path: current, accessible })
+        walk
     }
 
     /// Find impl methods for a type name

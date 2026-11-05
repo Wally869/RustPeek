@@ -294,25 +294,28 @@ impl<'a> ValidationVisitor<'a> {
         else {
             return GlobOutcome::Unresolved;
         };
-        if let Some(module) = symbols
-            .resolve_module(&abs, &self.module_path, self.crate_name)
-            .filter(|m| symbols.module_exists(&m.path))
-        {
-            return if module.accessible { GlobOutcome::Resolved } else { GlobOutcome::Private };
+        let walk = symbols.walk_path(&abs, &self.module_path, self.crate_name);
+        if walk.stop.is_none() && symbols.module_exists(&walk.reached) {
+            return if walk.accessible { GlobOutcome::Resolved } else { GlobOutcome::Private };
         }
-        let Some((name, module_part)) = abs.split_last() else {
+        // The prefix names an item (or a module without a file): its parent modules must
+        // all have been walked, so only the last segment may be where the walk stopped.
+        let Some(last) = abs.len().checked_sub(1) else {
             return GlobOutcome::Unresolved;
         };
-        let Some(module) = symbols.resolve_module(module_part, &self.module_path, self.crate_name)
-        else {
-            return GlobOutcome::Unresolved;
+        let last_is_item = match walk.stop {
+            None => true,
+            Some(PathStop::NotModule { index }) if index == last => true,
+            Some(PathStop::Missing { index }) if index == last => false,
+            Some(_) => return GlobOutcome::Unresolved,
         };
-        if !module.accessible {
+        if walk.first_private.is_some_and(|index| index < last) {
             return GlobOutcome::Private;
         }
-        match symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name) {
-            Resolved::Accessible(_) => GlobOutcome::Resolved,
-            Resolved::Inaccessible(_) | Resolved::NotFound => GlobOutcome::Unresolved,
+        if last_is_item && walk.first_private.is_none() {
+            GlobOutcome::Resolved
+        } else {
+            GlobOutcome::Unresolved
         }
     }
 
@@ -1025,20 +1028,29 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         ) else {
             return;
         };
-        if abs.first().map(String::as_str) != Some("crate") {
+        let skipped = names.len() as isize - abs.len() as isize;
+        let Some(last) = abs.len().checked_sub(1) else {
+            return;
+        };
+        let walk = symbols.walk_path(
+            &abs[..last],
+            &self.validator.module_path,
+            self.validator.crate_name,
+        );
+        let stop_index = match walk.stop {
+            Some(PathStop::Unrooted) => return,
+            Some(PathStop::Missing { index } | PathStop::NotModule { index }) => Some(index),
+            None => None,
+        };
+        let private_index = walk
+            .first_private
+            .filter(|private| stop_index.is_none_or(|stop| *private <= stop));
+        if let Some(index) = private_index {
+            self.report_private(path, (index as isize + skipped) as usize, &abs[index]);
             return;
         }
-        let skipped = names.len() as isize - abs.len() as isize;
-        let mut current = ModulePath::root();
-        for index in 1..abs.len() - 1 {
-            let segment = &abs[index];
-            let found = symbols.resolve_item(
-                &current,
-                segment,
-                &self.validator.module_path,
-                self.validator.crate_name,
-            );
-            let Some(item) = found.item() else {
+        match walk.stop {
+            Some(PathStop::Missing { index }) => {
                 let span = path.segments[(index as isize + skipped) as usize].ident.span();
                 self.validator.diagnostics.push(Diagnostic {
                     severity: Severity::Error,
@@ -1046,7 +1058,8 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
                     line: span.start().line,
                     column: span.start().column + 1,
                     message: format!(
-                        "failed to resolve: could not find `{segment}` in `{}`",
+                        "failed to resolve: could not find `{}` in `{}`",
+                        abs[index],
                         abs[index - 1]
                     ),
                     error_code: Some("E0433".to_string()),
@@ -1054,19 +1067,12 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
                     fix: None,
                 });
                 return;
-            };
-            if is_private_step(true, found) {
-                self.report_private(path, (index as isize + skipped) as usize, segment);
-                return;
             }
-            if item.kind != ItemKind::Module {
-                return;
-            }
-            current = item.module.child(&item.name);
+            Some(_) => return,
+            None => {}
         }
-        let last = abs.len() - 1;
         let found = symbols.resolve_item(
-            &current,
+            &walk.reached,
             &abs[last],
             &self.validator.module_path,
             self.validator.crate_name,
