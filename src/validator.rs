@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use syn::visit::Visit;
@@ -13,8 +14,13 @@ pub fn validate_file(
     symbols: &SymbolTable,
     src_dir: &Path,
     crate_name: Option<&str>,
+    external_crates: Option<&HashSet<String>>,
 ) -> Vec<Diagnostic> {
+    let mut macro_modules = HashSet::new();
+    collect_macro_modules(&ast.items, module_path, &mut macro_modules);
     let mut visitor = ValidationVisitor {
+        external_crates,
+        macro_modules,
         diagnostics: Vec::new(),
         file_path,
         module_path: module_path.clone(),
@@ -104,6 +110,26 @@ struct ValidationVisitor<'a> {
     /// The crate's own name (from Cargo.toml), so `use <name>::...` is treated as `use crate::...`
     crate_name: Option<&'a str>,
     local_scopes: Vec<LocalScope>,
+    /// None when the crate's dependencies are unknown.
+    external_crates: Option<&'a HashSet<String>>,
+    /// Modules with an item-level macro invocation, which may define any item.
+    macro_modules: HashSet<ModulePath>,
+}
+
+fn collect_macro_modules(items: &[syn::Item], module: &ModulePath, out: &mut HashSet<ModulePath>) {
+    for item in items {
+        match item {
+            syn::Item::Macro(_) => {
+                out.insert(module.clone());
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    collect_macro_modules(inner, &module.child(&m.ident.to_string()), out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl<'a> ValidationVisitor<'a> {
@@ -250,6 +276,18 @@ impl<'a> ValidationVisitor<'a> {
                             fix: None,
                         });
                     }
+                } else if self.is_unknown_external_crate(prefix) {
+                    let span = use_item.use_token.span;
+                    self.diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        file: self.file_path.to_path_buf(),
+                        line: span.start().line,
+                        column: span.start().column + 1,
+                        message: format!("unresolved import `{}`", prefix[0]),
+                        error_code: Some("E0432".to_string()),
+                        hint: None,
+                        fix: None,
+                    });
                 }
             }
             syn::UseTree::Group(g) => {
@@ -341,6 +379,62 @@ impl<'a> ValidationVisitor<'a> {
                     .symbols
                     .resolve_use_path(&self.module_path, path, self.crate_name)
                     .is_some())
+    }
+
+    /// The first segment of a non-local glob prefix names no crate and nothing in scope.
+    /// Off when the dependency list is unknown.
+    fn is_unknown_external_crate(&self, glob_prefix: &[String]) -> bool {
+        let Some(external_crates) = self.external_crates else {
+            return false;
+        };
+        let Some(first) = glob_prefix.first() else {
+            return false;
+        };
+        let is_sysroot_crate = matches!(first.as_str(), "std" | "core" | "alloc" | "proc_macro" | "test");
+        !(is_sysroot_crate
+            || external_crates.contains(first)
+            || self.macro_modules.contains(&self.module_path)
+            || self.name_in_scope(first, glob_prefix))
+    }
+
+    /// Whether `name` is brought into the current module or its enclosing blocks by an item,
+    /// a `use`, or a glob that may bring any name. `skip_glob` is the glob being checked.
+    fn name_in_scope(&self, name: &str, skip_glob: &[String]) -> bool {
+        let symbols = self.symbols;
+        let glob_may_bring = |prefix: &[String]| {
+            if prefix == skip_glob {
+                return false;
+            }
+            let target = symbols
+                .resolve_use_path(&self.module_path, prefix, self.crate_name)
+                .and_then(|abs| symbols.resolve_module(&abs, &self.module_path, self.crate_name));
+            match target {
+                Some(module) => !matches!(
+                    symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name),
+                    Resolved::NotFound
+                ),
+                None => true,
+            }
+        };
+        for scope in &self.local_scopes {
+            if scope.imports.iter().any(|i| i.name == name)
+                || scope.globs.iter().any(|g| glob_may_bring(g))
+            {
+                return true;
+            }
+        }
+        if !matches!(
+            symbols.resolve_item(&self.module_path, name, &self.module_path, self.crate_name),
+            Resolved::NotFound
+        ) {
+            return true;
+        }
+        symbols
+            .modules
+            .values()
+            .flat_map(|m| m.uses.iter())
+            .filter(|u| u.module == self.module_path)
+            .any(|u| if u.is_glob { glob_may_bring(&u.path) } else { u.alias == name })
     }
 
     /// Check if a `use` path resolves within the crate.
@@ -754,11 +848,15 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
         let mut scope = LocalScope::default();
         for stmt in &node.stmts {
             if let syn::Stmt::Item(syn::Item::Use(u)) = stmt {
-                self.validator.validate_use_tree(&u.tree, &mut Vec::new(), u);
                 collect_local_imports(&u.tree, &mut Vec::new(), &mut scope);
             }
         }
         self.validator.local_scopes.push(scope);
+        for stmt in &node.stmts {
+            if let syn::Stmt::Item(syn::Item::Use(u)) = stmt {
+                self.validator.validate_use_tree(&u.tree, &mut Vec::new(), u);
+            }
+        }
         syn::visit::visit_block(self, node);
         self.validator.local_scopes.pop();
     }

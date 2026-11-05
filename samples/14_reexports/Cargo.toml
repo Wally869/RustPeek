@@ -2,3 +2,7 @@
 name = "sample_reexports"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+serde = "1"
+proc-macro2 = "1"

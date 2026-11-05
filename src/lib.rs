@@ -10,20 +10,51 @@ use std::path::{Path, PathBuf};
 
 use types::*;
 
-/// Read the crate name from Cargo.toml (with `-` replaced by `_` for Rust identifiers).
-fn read_crate_name(crate_root: &Path) -> Option<String> {
-    let cargo_toml = crate_root.join("Cargo.toml");
-    let content = std::fs::read_to_string(cargo_toml).ok()?;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("name") {
-            if let Some(val) = trimmed.split('=').nth(1) {
-                let name = val.trim().trim_matches('"').trim_matches('\'');
-                return Some(name.replace('-', "_"));
+struct CargoInfo {
+    /// With `-` replaced by `_` for Rust identifiers.
+    crate_name: Option<String>,
+    /// None when Cargo.toml is missing or does not parse: the dependencies are unknown.
+    dependencies: Option<HashSet<String>>,
+}
+
+fn read_cargo_info(crate_root: &Path) -> CargoInfo {
+    let unknown = CargoInfo { crate_name: None, dependencies: None };
+    let Ok(content) = std::fs::read_to_string(crate_root.join("Cargo.toml")) else {
+        return unknown;
+    };
+    let Ok(manifest) = content.parse::<toml::Table>() else {
+        return unknown;
+    };
+    let crate_name = manifest
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|n| n.replace('-', "_"));
+
+    let mut dependencies = HashSet::new();
+    let mut collect = |table: &toml::Table| {
+        for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(deps) = table.get(kind).and_then(|d| d.as_table()) {
+                dependencies.extend(deps.keys().map(|k| k.replace('-', "_")));
             }
         }
+    };
+    collect(&manifest);
+    if let Some(targets) = manifest.get("target").and_then(|t| t.as_table()) {
+        for target in targets.values().filter_map(|t| t.as_table()) {
+            collect(target);
+        }
     }
-    None
+    CargoInfo { crate_name, dependencies: Some(dependencies) }
+}
+
+fn collect_extern_crates(ast: &syn::File, names: &mut HashSet<String>) {
+    for item in &ast.items {
+        if let syn::Item::ExternCrate(e) = item {
+            let name = e.rename.as_ref().map_or(&e.ident, |(_, alias)| alias);
+            names.insert(name.to_string());
+        }
+    }
 }
 
 /// Run the full rustpeek analysis on a crate.
@@ -92,7 +123,8 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
 
     // ── Pass 2: Crate indexing + validation ──
 
-    let crate_name = read_crate_name(crate_root);
+    let CargoInfo { crate_name, dependencies } = read_cargo_info(crate_root);
+    let mut extern_crates = HashSet::new();
 
     // Step 1: Build the symbol table from ALL files in the crate
     let mut symbol_table = SymbolTable::new();
@@ -108,14 +140,27 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
             None => continue,
         };
 
+        collect_extern_crates(&ast, &mut extern_crates);
         let module_info = indexer::index_file(&ast, module_path, file_path);
         symbol_table.modules.insert(module_path.clone(), module_info);
     }
 
+    let external_crates = dependencies.map(|mut deps| {
+        deps.extend(extern_crates);
+        deps
+    });
+
     // Step 2: Validate only the changed files against the full symbol table
     for (module_path, ast, file_path) in &parsed_files {
-        let diagnostics =
-            validator::validate_file(ast, file_path, module_path, &symbol_table, &src_dir, crate_name.as_deref());
+        let diagnostics = validator::validate_file(
+            ast,
+            file_path,
+            module_path,
+            &symbol_table,
+            &src_dir,
+            crate_name.as_deref(),
+            external_crates.as_ref(),
+        );
         all_diagnostics.extend(diagnostics);
     }
 
