@@ -13,6 +13,7 @@ mod reexport_vis;
 mod fn_uses;
 mod qualified_paths;
 mod bare_globs;
+mod reexport_chain;
 use crate::crate_vis::C;
 use crate::inline_mods::hub::Packet;
 use crate::inline_mods::named::Frame;

@@ -12,4 +12,5 @@ mod glob_privacy_errors;
 mod pub_in_errors;
 mod reexport_vis_errors;
 mod fn_use_errors;
+mod reexport_chain_errors;
 fn main() {}

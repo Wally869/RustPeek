@@ -238,21 +238,30 @@ impl<'a> ValidationVisitor<'a> {
     fn check_reexport_visibility(
         &mut self,
         item: &ItemInfo,
+        links: &[Vis],
+        name: &str,
         use_vis: &Vis,
         span: proc_macro2::Span,
     ) {
-        let Vis::Restricted(item_scope) = &item.vis else {
+        // Links are listed nearest the item first, so the last one is nearest the re-export.
+        let narrowing_scope = links
+            .iter()
+            .rev()
+            .chain(std::iter::once(&item.vis))
+            .find_map(|vis| match (vis, use_vis) {
+                (Vis::Restricted(scope), Vis::Public) => Some(scope),
+                (Vis::Restricted(scope), Vis::Restricted(use_scope))
+                    if !use_scope.0.starts_with(&scope.0) =>
+                {
+                    Some(scope)
+                }
+                _ => None,
+            });
+        let Some(narrowing_scope) = narrowing_scope else {
             return;
         };
-        let wider = match use_vis {
-            Vis::Public => true,
-            Vis::Restricted(use_scope) => !use_scope.0.starts_with(&item_scope.0),
-        };
-        if !wider {
-            return;
-        }
         let code = if item.kind == ItemKind::Module { "E0365" } else { "E0364" };
-        let message = reexport_message(&item.name, item_scope);
+        let message = reexport_message(name, narrowing_scope);
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
             file: self.file_path.to_path_buf(),
@@ -310,7 +319,7 @@ impl<'a> ValidationVisitor<'a> {
             if item_name == "self" && module.accessible {
                 return;
             }
-            let found = symbols.resolve_item(
+            let (found, links) = symbols.resolve_item_links(
                 &module_path,
                 item_name,
                 &self.module_path,
@@ -357,7 +366,7 @@ impl<'a> ValidationVisitor<'a> {
                     fix,
                 });
             } else if let Resolved::Accessible(item) = found {
-                self.check_reexport_visibility(item, use_vis, span);
+                self.check_reexport_visibility(item, &links, item_name, use_vis, span);
             }
         } else {
             self.diagnostics.push(Diagnostic {

@@ -84,6 +84,14 @@ fn resolve_vis_path(path: &syn::Path, defining_module: &ModulePath) -> ModulePat
     current
 }
 
+/// State of one resolution: the lookups in progress (cycle guard) and the visibility of each
+/// `use` link on the chain that resolved the name, nearest the item first.
+#[derive(Default)]
+struct Walk {
+    active: HashSet<(ModulePath, String)>,
+    links: Vec<Vis>,
+}
+
 /// Outcome of resolving a name from an accessor module.
 #[derive(Debug, Clone, Copy)]
 pub enum Resolved<'a> {
@@ -280,7 +288,21 @@ impl SymbolTable {
         accessor: &ModulePath,
         crate_name: Option<&str>,
     ) -> Resolved<'_> {
-        self.resolve_item_in(module, name, accessor, crate_name, &mut HashSet::new())
+        self.resolve_item_in(module, name, accessor, crate_name, &mut Walk::default())
+    }
+
+    /// Like `resolve_item`, also returning the visibility of every `use` link the name
+    /// resolved through (empty when the item is defined in `module` itself).
+    pub fn resolve_item_links(
+        &self,
+        module: &ModulePath,
+        name: &str,
+        accessor: &ModulePath,
+        crate_name: Option<&str>,
+    ) -> (Resolved<'_>, Vec<Vis>) {
+        let mut walk = Walk::default();
+        let found = self.resolve_item_in(module, name, accessor, crate_name, &mut walk);
+        (found, walk.links)
     }
 
     /// Resolve a module reached by an absolute path, going through re-exported modules.
@@ -290,7 +312,7 @@ impl SymbolTable {
         accessor: &ModulePath,
         crate_name: Option<&str>,
     ) -> Option<ResolvedModule> {
-        self.resolve_module_in(abs, accessor, crate_name, &mut HashSet::new())
+        self.resolve_module_in(abs, accessor, crate_name, &mut Walk::default())
     }
 
     fn resolve_item_in(
@@ -299,14 +321,14 @@ impl SymbolTable {
         name: &str,
         accessor: &ModulePath,
         crate_name: Option<&str>,
-        in_progress: &mut HashSet<(ModulePath, String)>,
+        in_progress: &mut Walk,
     ) -> Resolved<'_> {
         let key = (module.clone(), name.to_string());
-        if !in_progress.insert(key.clone()) {
+        if !in_progress.active.insert(key.clone()) {
             return Resolved::NotFound;
         }
         let found = self.search_module(module, name, accessor, crate_name, in_progress);
-        in_progress.remove(&key);
+        in_progress.active.remove(&key);
         found
     }
 
@@ -316,7 +338,7 @@ impl SymbolTable {
         name: &str,
         accessor: &ModulePath,
         crate_name: Option<&str>,
-        in_progress: &mut HashSet<(ModulePath, String)>,
+        in_progress: &mut Walk,
     ) -> Resolved<'_> {
         // An inline `mod` has no entry of its own: its items live in the enclosing file's
         // module, tagged with the inline module path.
@@ -337,13 +359,18 @@ impl SymbolTable {
                 continue;
             };
             let reachable = use_info.vis.accessible_from(accessor);
+            let mark = in_progress.links.len();
             match self.resolve_abs_item(&abs, module, accessor, crate_name, in_progress) {
-                Resolved::Accessible(item) if reachable => return Resolved::Accessible(item),
+                Resolved::Accessible(item) if reachable => {
+                    in_progress.links.push(use_info.vis.clone());
+                    return Resolved::Accessible(item);
+                }
                 Resolved::Accessible(item) | Resolved::Inaccessible(item) => {
                     inaccessible.get_or_insert(item);
                 }
                 Resolved::NotFound => {}
             }
+            in_progress.links.truncate(mark);
         }
 
         for use_info in info.uses.iter().filter(|u| u.module == *module) {
@@ -359,13 +386,18 @@ impl SymbolTable {
             };
             // A glob imports only what its holder can see; the rest is skipped but still
             // exists behind the glob, so an explicit path to it is private, not missing.
-            match self.resolve_item_in(&target.path, name, module, crate_name, in_progress) {
+            let mark = in_progress.links.len();
+            let seen_by_holder =
+                self.resolve_item_in(&target.path, name, module, crate_name, in_progress);
+            in_progress.links.truncate(mark);
+            match seen_by_holder {
                 Resolved::Accessible(_) => {
                     match self.resolve_item_in(&target.path, name, accessor, crate_name, in_progress) {
                         Resolved::Accessible(item)
                             if target.accessible
                                 && use_info.vis.accessible_from(accessor) =>
                         {
+                            in_progress.links.push(use_info.vis.clone());
                             return Resolved::Accessible(item);
                         }
                         Resolved::Accessible(item) | Resolved::Inaccessible(item) => {
@@ -373,6 +405,7 @@ impl SymbolTable {
                         }
                         Resolved::NotFound => {}
                     }
+                    in_progress.links.truncate(mark);
                 }
                 Resolved::Inaccessible(item) => {
                     inaccessible.get_or_insert(item);
@@ -420,7 +453,7 @@ impl SymbolTable {
         path_accessor: &ModulePath,
         accessor: &ModulePath,
         crate_name: Option<&str>,
-        in_progress: &mut HashSet<(ModulePath, String)>,
+        in_progress: &mut Walk,
     ) -> Resolved<'_> {
         let abs = match abs.split_last() {
             Some((last, rest)) if last == "self" && !rest.is_empty() => rest,
@@ -445,7 +478,7 @@ impl SymbolTable {
         abs: &[String],
         accessor: &ModulePath,
         crate_name: Option<&str>,
-        in_progress: &mut HashSet<(ModulePath, String)>,
+        in_progress: &mut Walk,
     ) -> Option<ResolvedModule> {
         if abs.first().map(String::as_str) != Some("crate") {
             return None;
@@ -453,7 +486,9 @@ impl SymbolTable {
         let mut current = ModulePath::root();
         let mut accessible = true;
         for segment in &abs[1..] {
+            let mark = in_progress.links.len();
             let found = self.resolve_item_in(&current, segment, accessor, crate_name, in_progress);
+            in_progress.links.truncate(mark);
             accessible &= matches!(found, Resolved::Accessible(_));
             let item = found.item()?;
             if item.kind != ItemKind::Module {
