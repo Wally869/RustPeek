@@ -686,6 +686,10 @@ impl<'a> ValidationVisitor<'a> {
                 }
                 if item.kind == ItemKind::Trait {
                     // rustc: E0658 for an existing member, E0432 for a missing one.
+                    if item.has_macro_items && !item.fields.iter().any(|m| &m.name == variant_name) {
+                        // A macro call in the trait body may define the member.
+                        return false;
+                    }
                     if item.fields.iter().any(|m| &m.name == variant_name) {
                         (
                             "`use` associated items of traits is unstable".to_string(),

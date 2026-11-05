@@ -214,6 +214,8 @@ pub struct ItemInfo {
     pub param_count: Option<usize>,
     /// Unit or tuple struct: also binds a constructor in the value namespace
     pub has_value_ctor: bool,
+    /// Trait whose body holds an item-like macro call: it may define any member.
+    pub has_macro_items: bool,
 }
 
 /// A use statement
