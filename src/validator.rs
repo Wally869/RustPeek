@@ -512,7 +512,7 @@ impl<'a> ValidationVisitor<'a> {
                 self.crate_name,
             );
 
-            if !module.accessible || matches!(found, Resolved::Inaccessible(_)) {
+            if is_private_step(module.accessible, found) {
                 self.diagnostics.push(Diagnostic {
                     severity: Severity::Error,
                     file: self.file_path.to_path_buf(),
@@ -734,6 +734,12 @@ impl<'a> ValidationVisitor<'a> {
     }
 }
 
+/// The privacy rule shared by `use` paths and expression paths: a path is private when the
+/// module it goes through, or the item it names, is not visible to the accessor.
+fn is_private_step(module_accessible: bool, found: Resolved) -> bool {
+    !module_accessible || matches!(found, Resolved::Inaccessible(_))
+}
+
 /// Visitor that walks expressions looking for references to validate.
 struct RefVisitor<'a, 'b> {
     validator: &'a mut ValidationVisitor<'b>,
@@ -741,6 +747,9 @@ struct RefVisitor<'a, 'b> {
 
 impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
+        if node.qself.is_none() {
+            self.check_path_modules(&node.path);
+        }
         let type_name = path_last_segment(&node.path);
         if let Some(type_name) = type_name {
             let struct_fields: Option<Vec<String>> = {
@@ -1014,11 +1023,39 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
                 });
                 return;
             };
+            if is_private_step(true, found) {
+                self.report_private(path, (index as isize + skipped) as usize, segment);
+                return;
+            }
             if item.kind != ItemKind::Module {
                 return;
             }
             current = item.module.child(&item.name);
         }
+        let last = abs.len() - 1;
+        let found = symbols.resolve_item(
+            &current,
+            &abs[last],
+            &self.validator.module_path,
+            self.validator.crate_name,
+        );
+        if is_private_step(true, found) {
+            self.report_private(path, (last as isize + skipped) as usize, &abs[last]);
+        }
+    }
+
+    fn report_private(&mut self, path: &syn::Path, segment_index: usize, name: &str) {
+        let span = path.segments[segment_index].ident.span();
+        self.validator.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            file: self.validator.file_path.to_path_buf(),
+            line: span.start().line,
+            column: span.start().column + 1,
+            message: format!("`{name}` is private"),
+            error_code: Some("E0603".to_string()),
+            hint: None,
+            fix: None,
+        });
     }
 
     fn private_behind_glob(&self, name: &str) -> Option<String> {

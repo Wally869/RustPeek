@@ -19,5 +19,6 @@ mod bare_path_errors;
 mod unknown_glob_errors;
 mod variant_reexport_errors;
 mod glob_private_name_errors;
+mod expr_privacy_errors;
 pub(super) fn root_item() {}
 fn main() {}
