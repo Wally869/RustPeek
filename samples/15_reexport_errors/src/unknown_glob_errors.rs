@@ -9,3 +9,6 @@ mod nested {
 fn in_body() {
     use missing::*;
 }
+
+// `alloc` needs `extern crate alloc;`, which this crate does not have.
+use alloc::vec::*;

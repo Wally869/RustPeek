@@ -18,3 +18,7 @@ use inner::open::Z;
 use filemod::FPriv;
 use filemod::hidden::FX;
 use filemod::open::FZ;
+
+fn missing_module_in_expr() {
+    let _ = inner::gone::X;
+}

@@ -1,3 +1,4 @@
+extern crate alloc;
 mod ast;
 mod a;
 mod other;

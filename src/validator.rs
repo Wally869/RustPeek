@@ -380,17 +380,20 @@ impl<'a> ValidationVisitor<'a> {
     /// The first segment of a non-local glob prefix names no crate and nothing in scope.
     /// Off when the dependency list is unknown.
     fn is_unknown_external_crate(&self, glob_prefix: &[String]) -> bool {
-        let Some(external_crates) = self.external_crates else {
+        if self.external_crates.is_none() {
             return false;
-        };
+        }
         let Some(first) = glob_prefix.first() else {
             return false;
         };
-        let is_sysroot_crate = matches!(first.as_str(), "std" | "core" | "alloc" | "proc_macro" | "test");
-        !(is_sysroot_crate
-            || external_crates.contains(first)
+        !(self.is_known_crate(first)
             || self.macro_modules.contains(&self.module_path)
             || self.name_in_scope(first, glob_prefix))
+    }
+
+    /// A crate name the current crate can use without `extern crate`.
+    fn is_known_crate(&self, name: &str) -> bool {
+        is_sysroot_crate(name) || self.external_crates.is_some_and(|c| c.contains(name))
     }
 
     /// Whether `name` is brought into the current module or its enclosing blocks by an item,
@@ -409,7 +412,24 @@ impl<'a> ValidationVisitor<'a> {
                     symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name),
                     Resolved::NotFound
                 ),
-                None => true,
+                // Outside the crate: it may bring any name, unless its own first
+                // segment is unknown too (an unresolved glob brings nothing).
+                None => prefix.first().is_some_and(|first| {
+                    self.is_known_crate(first)
+                        || !matches!(
+                            symbols.resolve_item(
+                                &self.module_path,
+                                first,
+                                &self.module_path,
+                                self.crate_name
+                            ),
+                            Resolved::NotFound
+                        )
+                        || self
+                            .local_scopes
+                            .iter()
+                            .any(|s| s.imports.iter().any(|i| i.name == *first))
+                }),
             }
         };
         for scope in &self.local_scopes {
@@ -1145,6 +1165,12 @@ fn reexport_message(name: &str, item_scope: &ModulePath) -> String {
     } else {
         format!("`{name}` is private, and cannot be re-exported")
     }
+}
+
+/// Sysroot crates in the extern prelude of every crate; `alloc` and `test` need
+/// `extern crate`.
+fn is_sysroot_crate(name: &str) -> bool {
+    matches!(name, "std" | "core" | "proc_macro")
 }
 
 fn is_crate_path(path: &[String], crate_name: Option<&str>) -> bool {
