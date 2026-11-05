@@ -33,6 +33,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 _ => Vec::new(),
             };
 
+            index_derives(&s.attrs, &s.ident.to_string(), info);
             info.items.push(ItemInfo {
                 name: s.ident.to_string(),
                 kind: ItemKind::Struct,
@@ -80,6 +81,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 })
                 .collect();
 
+            index_derives(&e.attrs, &e.ident.to_string(), info);
             info.items.push(ItemInfo {
                 name: e.ident.to_string(),
                 kind: ItemKind::Enum,
@@ -234,13 +236,24 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
         }
 
         syn::Item::Impl(imp) => {
-            if imp.trait_.is_some() {
-                // Trait impl — we only index direct impls for now
-                return;
-            }
-
             let type_name = extract_type_name(&imp.self_ty);
             if let Some(type_name) = type_name {
+                let trait_name = imp
+                    .trait_
+                    .as_ref()
+                    .and_then(|(_, path, _)| path.segments.last().map(|s| s.ident.to_string()));
+                let is_blanket = trait_name.is_some()
+                    && imp.generics.type_params().any(|p| p.ident == type_name.as_str());
+                let has_macro = imp.items.iter().any(|item| matches!(item, syn::ImplItem::Macro(_)));
+                let assoc_names: Vec<String> = imp
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        syn::ImplItem::Const(c) => Some(c.ident.to_string()),
+                        syn::ImplItem::Type(t) => Some(t.ident.to_string()),
+                        _ => None,
+                    })
+                    .collect();
                 let methods: Vec<MethodInfo> = imp
                     .items
                     .iter()
@@ -267,6 +280,11 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.impls.push(ImplInfo {
                     type_name,
                     methods,
+                    assoc_names,
+                    trait_name,
+                    is_derive: false,
+                    is_blanket,
+                    has_macro,
                 });
             }
         }
@@ -292,6 +310,38 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
         }
 
         _ => {}
+    }
+}
+
+/// One derive entry per name of the `#[derive(..)]` attributes of a type. An attribute the
+/// tool cannot read (`cfg_attr`, a malformed derive) is recorded as an unknown derive.
+fn index_derives(attrs: &[syn::Attribute], type_name: &str, info: &mut ModuleInfo) {
+    let mut names = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("derive") {
+            let parsed = attr.parse_nested_meta(|meta| {
+                if let Some(last) = meta.path.segments.last() {
+                    names.push(last.ident.to_string());
+                }
+                Ok(())
+            });
+            if parsed.is_err() {
+                names.push("unreadable".to_string());
+            }
+        } else if attr.path().is_ident("cfg_attr") {
+            names.push("cfg_attr".to_string());
+        }
+    }
+    for name in names {
+        info.impls.push(ImplInfo {
+            type_name: type_name.to_string(),
+            methods: Vec::new(),
+            assoc_names: Vec::new(),
+            trait_name: Some(name),
+            is_derive: true,
+            is_blanket: false,
+            has_macro: false,
+        });
     }
 }
 

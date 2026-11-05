@@ -20,4 +20,22 @@ pub enum Kind {
 fn variant() {
     let _ = Kind::Exact;
     let _ = Kind::Missing;
+    let _ = Kind::missing_fn();
+    let _ = Kind::MISSING;
+}
+
+pub struct Figure {
+    pub n: u8,
+}
+
+impl Figure {
+    pub fn new() -> Figure {
+        Figure { n: 0 }
+    }
+}
+
+fn figure() {
+    let _ = Figure::new();
+    let _ = Figure::missing_fn();
+    let _ = Figure::MISSING;
 }
