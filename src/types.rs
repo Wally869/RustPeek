@@ -458,7 +458,7 @@ impl SymbolTable {
             .collect()
     }
 
-    fn enclosing_file_module(&self, module: &ModulePath) -> Option<&ModuleInfo> {
+    pub(crate) fn enclosing_file_module(&self, module: &ModulePath) -> Option<&ModuleInfo> {
         let mut ancestor = module.parent();
         while let Some(path) = ancestor {
             if let Some(info) = self.modules.get(&path) {
