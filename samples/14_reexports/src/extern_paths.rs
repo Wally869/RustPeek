@@ -16,7 +16,6 @@ mod inner {
     use crate::extern_paths::{Error as E2, RangeFull};
 
     pub fn through_paths(a: &mut u8, b: &mut u8) {
-        kore::mem::drop(1u8);
         crate::extern_paths::kore::mem::drop(2u8);
         super::kore::mem::drop(4u8);
         super::kore::mem::swap(a, b);
