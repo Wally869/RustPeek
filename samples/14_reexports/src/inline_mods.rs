@@ -24,4 +24,31 @@ mod user {
     use super::named::Frame;
     use super::empty;
     use super::empty::*;
-    use crate::inline_mods::hub::*;}
+    use crate::inline_mods::hub::*;
+
+    struct Local;
+
+    fn helper() {}
+
+    fn run() {
+        let _a: Packet = Packet;
+        let _b: Frame = Frame;
+        let _c: Local = Local;
+        send();
+        helper();
+    }
+
+    mod deeper {
+        use super::Local;
+        use self::Inner as Alias;
+        use super::super::named::Frame;
+
+        struct Inner;
+
+        fn nested() {
+            let _a: Local = Local;
+            let _b: Alias = Inner;
+            let _c: Frame = Frame;
+        }
+    }
+}

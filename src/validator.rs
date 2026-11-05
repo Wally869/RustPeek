@@ -17,7 +17,7 @@ pub fn validate_file(
     let mut visitor = ValidationVisitor {
         diagnostics: Vec::new(),
         file_path,
-        module_path,
+        module_path: module_path.clone(),
         symbols,
         src_dir,
         source_lines: None,
@@ -34,7 +34,8 @@ pub fn validate_file(
 struct ValidationVisitor<'a> {
     diagnostics: Vec<Diagnostic>,
     file_path: &'a Path,
-    module_path: &'a ModulePath,
+    /// The file's module, or the inline module while inside its body.
+    module_path: ModulePath,
     symbols: &'a SymbolTable,
     src_dir: &'a Path,
     /// Lazily loaded source lines for fix generation
@@ -89,7 +90,7 @@ impl<'a> ValidationVisitor<'a> {
 
                 let mod_name = m.ident.to_string();
                 let resolved =
-                    discovery::resolve_mod_file(self.src_dir, self.module_path, &mod_name);
+                    discovery::resolve_mod_file(self.src_dir, &self.module_path, &mod_name);
 
                 if resolved.is_none() {
                     let span = m.ident.span();
@@ -112,9 +113,22 @@ impl<'a> ValidationVisitor<'a> {
 
     /// Validate `use crate::...` statements resolve to actual items.
     fn validate_use_statements(&mut self, ast: &syn::File) {
-        for item in &ast.items {
-            if let syn::Item::Use(u) = item {
-                self.validate_use_tree(&u.tree, &mut Vec::new(), u);
+        self.validate_use_items(&ast.items);
+    }
+
+    fn validate_use_items(&mut self, items: &[syn::Item]) {
+        for item in items {
+            match item {
+                syn::Item::Use(u) => self.validate_use_tree(&u.tree, &mut Vec::new(), u),
+                syn::Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content {
+                        let child = self.module_path.child(&m.ident.to_string());
+                        let outer = std::mem::replace(&mut self.module_path, child);
+                        self.validate_use_items(inner);
+                        self.module_path = outer;
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -145,18 +159,18 @@ impl<'a> ValidationVisitor<'a> {
                 if is_crate_path(prefix, self.crate_name) {
                     let symbols = self.symbols;
                     let resolves = symbols
-                        .resolve_use_path(self.module_path, prefix, self.crate_name)
+                        .resolve_use_path(&self.module_path, prefix, self.crate_name)
                         .is_some_and(|abs| {
                             let is_module = symbols
-                                .resolve_module(&abs, self.module_path, self.crate_name)
+                                .resolve_module(&abs, &self.module_path, self.crate_name)
                                 .is_some_and(|m| symbols.module_exists(&m));
                             is_module
                                 || abs.split_last().is_some_and(|(name, module_part)| {
                                     symbols
-                                        .resolve_module(module_part, self.module_path, self.crate_name)
+                                        .resolve_module(module_part, &self.module_path, self.crate_name)
                                         .is_some_and(|m| {
                                             symbols
-                                                .resolve_item(&m, name, self.module_path, self.crate_name)
+                                                .resolve_item(&m, name, &self.module_path, self.crate_name)
                                                 .accessible()
                                                 .is_some()
                                         })
@@ -200,7 +214,7 @@ impl<'a> ValidationVisitor<'a> {
 
         // Resolve self::/super:: to absolute crate paths before lookup
         let symbols = self.symbols;
-        let resolved = match symbols.resolve_use_path(self.module_path, path, self.crate_name) {
+        let resolved = match symbols.resolve_use_path(&self.module_path, path, self.crate_name) {
             Some(r) => r,
             None if path[0] == "super" => {
                 self.diagnostics.push(Diagnostic {
@@ -224,7 +238,7 @@ impl<'a> ValidationVisitor<'a> {
         let item_name = &resolved[resolved.len() - 1];
         let module_segments = &resolved[..resolved.len() - 1];
         let resolved_module = symbols
-            .resolve_module(module_segments, self.module_path, self.crate_name)
+            .resolve_module(module_segments, &self.module_path, self.crate_name)
             .filter(|m| symbols.module_exists(m));
 
         if let Some(module_path) = resolved_module {
@@ -235,7 +249,7 @@ impl<'a> ValidationVisitor<'a> {
             let found = symbols.resolve_item(
                 &module_path,
                 item_name,
-                self.module_path,
+                &self.module_path,
                 self.crate_name,
             );
 
@@ -320,7 +334,7 @@ impl<'a> ValidationVisitor<'a> {
     /// Resolve a name visible in the current module (own items, uses, re-exports, globs).
     fn lookup_in_scope(&self, name: &str) -> Option<&ItemInfo> {
         self.symbols
-            .resolve_item(self.module_path, name, self.module_path, self.crate_name)
+            .resolve_item(&self.module_path, name, &self.module_path, self.crate_name)
             .accessible()
     }
 
@@ -535,6 +549,16 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
 
     fn visit_item_use(&mut self, _node: &'ast syn::ItemUse) {
         // Already handled in validate_use_statements
+    }
+
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if node.content.is_none() {
+            return;
+        }
+        let inner = self.validator.module_path.child(&node.ident.to_string());
+        let outer = std::mem::replace(&mut self.validator.module_path, inner);
+        syn::visit::visit_item_mod(self, node);
+        self.validator.module_path = outer;
     }
 }
 
