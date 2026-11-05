@@ -32,3 +32,14 @@ pub fn uses_fmt() {
     self::kore::mem::drop(5u8);
     let _ = (alloc,dealloc, Layout::new::<u8>());
 }
+
+// `use a::b::{self, ..}` binds `b` (serde_json ser.rs).
+mod self_in_group {
+    use core::cell::{self, Cell};
+
+    pub fn f() -> Cell<u8> {
+        use self::cell::RefCell;
+        let _ = RefCell::new(0u8);
+        Cell::new(0)
+    }
+}

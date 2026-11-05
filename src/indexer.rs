@@ -319,7 +319,11 @@ fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut Mo
         syn::UseTree::Name(n) => {
             let mut path = prefix.clone();
             path.push(n.ident.to_string());
-            let alias = n.ident.to_string();
+            // `use a::b::{self}` binds `b`; the path keeps its trailing `self`.
+            let alias = match prefix.last() {
+                Some(last) if n.ident == "self" => last.clone(),
+                _ => n.ident.to_string(),
+            };
             info.uses.push(UseInfo {
                 path,
                 alias,
