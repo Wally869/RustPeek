@@ -115,14 +115,7 @@ impl<'a> ValidationVisitor<'a> {
     /// loads only the active one; the tool cannot evaluate cfg, so the missing file is
     /// accepted.
     pub(super) fn has_cfg_twin(&self, items: &[syn::Item], m: &syn::ItemMod) -> bool {
-        let cfgs = |module: &syn::ItemMod| -> Vec<String> {
-            module
-                .attrs
-                .iter()
-                .filter(|a| a.path().is_ident("cfg"))
-                .map(|a| a.meta.to_token_stream().to_string())
-                .collect()
-        };
+        let cfgs = |module: &syn::ItemMod| crate::types::cfg_conditions(&module.attrs);
         let own = cfgs(m);
         items.iter().any(|item| match item {
             syn::Item::Mod(other) => {

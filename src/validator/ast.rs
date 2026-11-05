@@ -9,13 +9,18 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
         let names: Vec<String> = node.path.segments.iter().map(|s| s.ident.to_string()).collect();
         if let Some(type_name) = type_name {
             // Through its own path: `Enum::Variant { .. }` names no struct.
-            let struct_fields: Option<Vec<String>> = {
+            let struct_fields: Option<(Vec<String>, Vec<String>)> = {
                 self.validator.lookup_path(&names)
                     .filter(|i| i.kind == ItemKind::Struct)
-                    .map(|item| item.fields.iter().map(|f| f.name.clone()).collect())
+                    .map(|item| {
+                        let all = item.fields.iter().map(|f| f.name.clone()).collect();
+                        let required =
+                            item.fields.iter().filter(|f| !f.cfg_gated).map(|f| f.name.clone()).collect();
+                        (all, required)
+                    })
             };
 
-            if let Some(expected_fields) = struct_fields {
+            if let Some((expected_fields, required_fields)) = struct_fields {
                 if node.rest.is_none() {
                     let provided: Vec<String> = node
                         .fields
@@ -29,7 +34,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
                         })
                         .collect();
 
-                    for field_name in &expected_fields {
+                    for field_name in &required_fields {
                         if !provided.contains(field_name) {
                             let span = node.path.segments.last().map(|s| s.ident.span())
                                 .unwrap_or_else(proc_macro2::Span::call_site);
@@ -102,7 +107,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
                 {
                     if let Some(expected) = item.param_count {
                         let actual = node.args.len();
-                        if actual != expected {
+                        if actual != expected && !item.alt_param_counts.contains(&actual) {
                             let span = path.path.segments.last().map(|s| s.ident.span())
                                 .unwrap_or_else(proc_macro2::Span::call_site);
                             self.validator.diagnostics.push(Diagnostic {

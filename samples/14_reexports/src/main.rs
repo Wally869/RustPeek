@@ -37,6 +37,7 @@ mod known_uses;
 mod shadowed_names;
 mod nested_path;
 mod lowercase_names;
+mod cfg_alternatives;
 #[path = "path_mapped/real_name.rs"]
 mod renamed;
 use crate::crate_vis::C;

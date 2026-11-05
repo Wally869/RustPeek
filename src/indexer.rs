@@ -12,11 +12,75 @@ pub fn index_file(ast: &syn::File, module_path: &ModulePath, file_path: &Path) -
     for item in &ast.items {
         index_item(item, module_path, &mut info);
     }
+    merge_cfg_alternatives(&mut info.items);
 
     info
 }
 
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
 fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo) {
+    let first_new = info.items.len();
+    index_item_body(item, module_path, info);
+    let cfg = cfg_conditions(item_attrs(item));
+    if cfg.is_empty() {
+        return;
+    }
+    for indexed in info.items[first_new..].iter_mut().filter(|i| i.module == *module_path) {
+        indexed.cfg = cfg.clone();
+    }
+}
+
+/// Items that are cfg alternatives of one another share what a check may rely on: every
+/// parameter count of a function, and the fields of a struct, each optional unless every
+/// alternative has it.
+fn merge_cfg_alternatives(items: &mut [ItemInfo]) {
+    for index in 0..items.len() {
+        let group: Vec<usize> = (0..items.len())
+            .filter(|&other| other == index || items[other].is_cfg_alternative_of(&items[index]))
+            .collect();
+        if group.len() < 2 {
+            continue;
+        }
+        let alt_param_counts: Vec<usize> =
+            group.iter().filter_map(|&g| items[g].param_count).collect();
+        let mut fields: Vec<FieldInfo> = Vec::new();
+        for &g in &group {
+            for field in &items[g].fields {
+                match fields.iter_mut().find(|f| f.name == field.name) {
+                    Some(known) => known.cfg_gated |= field.cfg_gated,
+                    None => fields.push(field.clone()),
+                }
+            }
+        }
+        for field in &mut fields {
+            field.cfg_gated |= group.iter().any(|&g| !items[g].fields.iter().any(|f| f.name == field.name));
+        }
+        let group_kind_is_struct = items[index].kind == ItemKind::Struct;
+        let target = &mut items[index];
+        if target.param_count.is_some() {
+            target.alt_param_counts = alt_param_counts;
+        }
+        if group_kind_is_struct {
+            target.fields = fields;
+        }
+    }
+}
+
+fn index_item_body(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo) {
     match item {
         syn::Item::Struct(s) => {
             let fields = match &s.fields {
@@ -27,6 +91,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                         f.ident.as_ref().map(|name| FieldInfo {
                             name: name.to_string(),
                             vis: Vis::from_syn(&f.vis, module_path),
+                            cfg_gated: !cfg_conditions(&f.attrs).is_empty(),
                         })
                     })
                     .collect(),
@@ -37,6 +102,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: s.ident.to_string(),
                 kind: ItemKind::Struct,
+                cfg: Vec::new(),
+                alt_param_counts: Vec::new(),
                 has_value_ctor: !matches!(s.fields, syn::Fields::Named(_)),
                 has_macro_items: false,
                 vis: Vis::from_syn(&s.vis, module_path),
@@ -63,6 +130,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                                     f.ident.as_ref().map(|name| FieldInfo {
                                         name: name.to_string(),
                                         vis: Vis::from_syn(&f.vis, module_path),
+                                        cfg_gated: false,
                                     })
                                 })
                                 .collect(),
@@ -85,6 +153,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: e.ident.to_string(),
                 kind: ItemKind::Enum,
+                cfg: Vec::new(),
+                alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: false,
                 vis: Vis::from_syn(&e.vis, module_path),
@@ -99,6 +169,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: t.ident.to_string(),
                 kind: ItemKind::Trait,
+                cfg: Vec::new(),
+                alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: t
                     .items
@@ -117,6 +189,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: f.sig.ident.to_string(),
                 kind: ItemKind::Function,
+                cfg: Vec::new(),
+                alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: false,
                 vis: Vis::from_syn(&f.vis, module_path),
@@ -131,6 +205,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: t.ident.to_string(),
                 kind: ItemKind::TypeAlias,
+                cfg: Vec::new(),
+                alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: false,
                 vis: Vis::from_syn(&t.vis, module_path),
@@ -145,6 +221,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: c.ident.to_string(),
                 kind: ItemKind::Const,
+                cfg: Vec::new(),
+                alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: false,
                 vis: Vis::from_syn(&c.vis, module_path),
@@ -159,6 +237,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: s.ident.to_string(),
                 kind: ItemKind::Static,
+                cfg: Vec::new(),
+                alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: false,
                 vis: Vis::from_syn(&s.vis, module_path),
@@ -179,6 +259,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: mod_name.clone(),
                     kind: ItemKind::Module,
+                    cfg: Vec::new(),
+                    alt_param_counts: Vec::new(),
                     has_value_ctor: false,
                     has_macro_items: false,
                     vis: Vis::from_syn(&m.vis, module_path),
@@ -207,6 +289,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: mod_name,
                     kind: ItemKind::Module,
+                    cfg: Vec::new(),
+                    alt_param_counts: Vec::new(),
                     has_value_ctor: false,
                     has_macro_items: false,
                     vis: Vis::from_syn(&m.vis, module_path),
@@ -298,6 +382,8 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: ident.to_string(),
                     kind: ItemKind::Macro,
+                    cfg: Vec::new(),
+                    alt_param_counts: Vec::new(),
                 has_value_ctor: false,
                 has_macro_items: false,
                     vis: Vis::Restricted(module_path.clone()), // macro_rules! visibility is complex
@@ -355,7 +441,7 @@ fn trait_members(t: &syn::ItemTrait, vis: &Vis) -> Vec<FieldInfo> {
             syn::TraitItem::Type(ty) => Some(&ty.ident),
             _ => None,
         })
-        .map(|ident| FieldInfo { name: ident.to_string(), vis: vis.clone() })
+        .map(|ident| FieldInfo { name: ident.to_string(), vis: vis.clone(), cfg_gated: false })
         .collect()
 }
 

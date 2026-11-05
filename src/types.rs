@@ -188,6 +188,18 @@ pub enum ItemKind {
 pub struct FieldInfo {
     pub name: String,
     pub vis: Vis,
+    /// Under a `#[cfg]`, or missing from a cfg alternative of the struct: optional in an initializer.
+    pub cfg_gated: bool,
+}
+
+/// The `#[cfg(..)]` conditions of an attribute list, as token text. The tool never evaluates them.
+pub(crate) fn cfg_conditions(attrs: &[syn::Attribute]) -> Vec<String> {
+    use quote::ToTokens;
+    attrs
+        .iter()
+        .filter(|a| a.path().is_ident("cfg"))
+        .map(|a| a.meta.to_token_stream().to_string())
+        .collect()
 }
 
 /// An enum variant
@@ -216,6 +228,29 @@ pub struct ItemInfo {
     pub has_value_ctor: bool,
     /// Trait whose body holds an item-like macro call: it may define any member.
     pub has_macro_items: bool,
+    /// `#[cfg(..)]` conditions on the item
+    pub cfg: Vec<String>,
+    /// Parameter counts of every cfg alternative of this function (empty when it has none)
+    pub alt_param_counts: Vec<usize>,
+}
+
+impl ItemInfo {
+    pub(crate) fn namespace(&self) -> u8 {
+        match self.kind {
+            ItemKind::Function | ItemKind::Const | ItemKind::Static => 0,
+            ItemKind::Macro => 1,
+            _ => 2,
+        }
+    }
+
+    /// Same name, namespace and module with at least one `#[cfg]` between the two: only one
+    /// of them exists in any build.
+    pub(crate) fn is_cfg_alternative_of(&self, other: &ItemInfo) -> bool {
+        self.name == other.name
+            && self.module == other.module
+            && self.namespace() == other.namespace()
+            && (!self.cfg.is_empty() || !other.cfg.is_empty())
+    }
 }
 
 /// A use statement
@@ -400,18 +435,26 @@ impl SymbolTable {
         else {
             return Resolved::NotFound;
         };
-        if let Some(item) = info.items.iter().find(|i| i.name == name && i.module == *module) {
-            return Resolved::of(item, item.vis.accessible_from(accessor));
+        let mut same_name = info.items.iter().filter(|i| i.name == name && i.module == *module);
+        if let Some(first) = same_name.next() {
+            // cfg alternatives: the name is usable when any alternative is accessible.
+            let chosen = std::iter::once(first)
+                .chain(same_name.filter(|i| i.is_cfg_alternative_of(first)))
+                .find(|i| i.vis.accessible_from(accessor))
+                .unwrap_or(first);
+            return Resolved::of(chosen, chosen.vis.accessible_from(accessor));
         }
 
         let mut inaccessible = None;
         let mut external = false;
+        let mut reachable_external = false;
         for use_info in info.uses.iter().filter(|u| u.module == *module) {
             if use_info.is_glob || use_info.alias != name {
                 continue;
             }
             let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
                 external = true;
+                reachable_external |= use_info.vis.accessible_from(accessor);
                 continue;
             };
             let reachable = use_info.vis.accessible_from(accessor);
@@ -428,6 +471,11 @@ impl SymbolTable {
                 Resolved::NotFound => {}
             }
             in_progress.links.truncate(mark);
+        }
+
+        // An explicit external `use` shadows any glob of the same name.
+        if reachable_external {
+            return Resolved::External;
         }
 
         for use_info in info.uses.iter().filter(|u| u.module == *module) {
