@@ -313,7 +313,12 @@ impl<'a> ValidationVisitor<'a> {
         let Some(narrowing_scope) = narrowing_scope else {
             return;
         };
-        let code = if item.kind == ItemKind::Module { "E0365" } else { "E0364" };
+        let binds_value = match item.kind {
+        ItemKind::Function | ItemKind::Const | ItemKind::Static => true,
+        ItemKind::Struct => item.has_value_ctor,
+        _ => false,
+    };
+    let code = if binds_value { "E0364" } else { "E0365" };
         let message = reexport_message(name, narrowing_scope);
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,

@@ -36,6 +36,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: s.ident.to_string(),
                 kind: ItemKind::Struct,
+                has_value_ctor: !matches!(s.fields, syn::Fields::Named(_)),
                 vis: Vis::from_syn(&s.vis, module_path),
                 module: module_path.clone(),
                 fields,
@@ -81,6 +82,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: e.ident.to_string(),
                 kind: ItemKind::Enum,
+                has_value_ctor: false,
                 vis: Vis::from_syn(&e.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
@@ -93,6 +95,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: t.ident.to_string(),
                 kind: ItemKind::Trait,
+                has_value_ctor: false,
                 vis: Vis::from_syn(&t.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
@@ -106,6 +109,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: f.sig.ident.to_string(),
                 kind: ItemKind::Function,
+                has_value_ctor: false,
                 vis: Vis::from_syn(&f.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
@@ -118,6 +122,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: t.ident.to_string(),
                 kind: ItemKind::TypeAlias,
+                has_value_ctor: false,
                 vis: Vis::from_syn(&t.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
@@ -130,6 +135,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: c.ident.to_string(),
                 kind: ItemKind::Const,
+                has_value_ctor: false,
                 vis: Vis::from_syn(&c.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
@@ -142,6 +148,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             info.items.push(ItemInfo {
                 name: s.ident.to_string(),
                 kind: ItemKind::Static,
+                has_value_ctor: false,
                 vis: Vis::from_syn(&s.vis, module_path),
                 module: module_path.clone(),
                 fields: Vec::new(),
@@ -160,6 +167,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: mod_name.clone(),
                     kind: ItemKind::Module,
+                    has_value_ctor: false,
                     vis: Vis::from_syn(&m.vis, module_path),
                     module: module_path.clone(),
                     fields: Vec::new(),
@@ -185,6 +193,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: mod_name,
                     kind: ItemKind::Module,
+                    has_value_ctor: false,
                     vis: Vis::from_syn(&m.vis, module_path),
                     module: module_path.clone(),
                     fields: Vec::new(),
@@ -242,6 +251,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.push(ItemInfo {
                     name: ident.to_string(),
                     kind: ItemKind::Macro,
+                has_value_ctor: false,
                     vis: Vis::Restricted(module_path.clone()), // macro_rules! visibility is complex
                     module: module_path.clone(),
                     fields: Vec::new(),

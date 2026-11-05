@@ -177,6 +177,8 @@ pub struct ItemInfo {
     pub variants: Vec<VariantInfo>,
     /// Parameter count for functions (None if not a function)
     pub param_count: Option<usize>,
+    /// Unit or tuple struct: also binds a constructor in the value namespace
+    pub has_value_ctor: bool,
 }
 
 /// A use statement
