@@ -588,13 +588,26 @@ impl SymbolTable {
                 walk.stop = Some(PathStop::Missing { index });
                 return walk;
             };
-            if item.kind != ItemKind::Module {
+            // A path segment is in the type namespace: a module of the same name as a fn
+            // or const of the module is the one meant.
+            let Some(item) = (item.kind == ItemKind::Module)
+                .then_some(item)
+                .or_else(|| self.own_module_item(&walk.reached, segment))
+            else {
                 walk.stop = Some(PathStop::NotModule { index });
                 return walk;
-            }
+            };
             walk.reached = item.module.child(&item.name);
         }
         walk
+    }
+
+    /// The module item `name` declared directly in `module`, if any.
+    fn own_module_item(&self, module: &ModulePath, name: &str) -> Option<&ItemInfo> {
+        let info = self.modules.get(module).or_else(|| self.enclosing_file_module(module))?;
+        info.items
+            .iter()
+            .find(|i| i.kind == ItemKind::Module && i.name == name && i.module == *module)
     }
 
     /// Find impl methods for a type name

@@ -24,6 +24,25 @@ mod other {
     pub trait Flags {}
 }
 
+// A fn and a mod of the same name: the fn is in the value namespace, the mod in the type
+// namespace.
+mod spans {
+    pub fn get_span() -> get_span::GetSpan {
+        get_span::GetSpan
+    }
+
+    pub mod get_span {
+        pub struct GetSpan;
+    }
+
+    use self::get_span::GetSpan;
+
+    pub fn twice() -> GetSpan {
+        let _ = get_span();
+        self::get_span::GetSpan
+    }
+}
+
 mod generated {
     make_struct!(Flags);
 
