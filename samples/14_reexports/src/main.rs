@@ -18,6 +18,7 @@ mod pub_in_nested;
 mod bare_paths;
 mod unknown_globs;
 mod variant_reexports;
+mod glob_private_names;
 use crate::crate_vis::C;
 use crate::inline_mods::hub::Packet;
 use crate::inline_mods::named::Frame;

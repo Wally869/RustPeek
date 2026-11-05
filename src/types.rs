@@ -425,6 +425,19 @@ impl SymbolTable {
         }
     }
 
+    /// Paths of the glob imports declared directly in `module`.
+    pub(crate) fn glob_paths(&self, module: &ModulePath) -> Vec<&[String]> {
+        let Some(info) = self.modules.get(module).or_else(|| self.enclosing_file_module(module))
+        else {
+            return Vec::new();
+        };
+        info.uses
+            .iter()
+            .filter(|u| u.is_glob && u.module == *module)
+            .map(|u| u.path.as_slice())
+            .collect()
+    }
+
     fn enclosing_file_module(&self, module: &ModulePath) -> Option<&ModuleInfo> {
         let mut ancestor = module.parent();
         while let Some(path) = ancestor {

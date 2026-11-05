@@ -1001,6 +1001,21 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         }
     }
 
+    fn private_behind_glob(&self, name: &str) -> Option<String> {
+        let v = &*self.validator;
+        let symbols = v.symbols;
+        let block_globs = v.local_scopes.iter().flat_map(|s| s.globs.iter().map(Vec::as_slice));
+        let module_globs = symbols.glob_paths(&v.module_path);
+        block_globs.chain(module_globs).find_map(|prefix| {
+            let abs = symbols.resolve_use_path(&v.module_path, prefix, v.crate_name)?;
+            let target = symbols.resolve_module(&abs, &v.module_path, v.crate_name)?;
+            match symbols.resolve_item(&target.path, name, &v.module_path, v.crate_name) {
+                Resolved::Inaccessible(_) => Some(target.path.display()),
+                _ => None,
+            }
+        })
+    }
+
     /// Check if a type name is in scope; if not, suggest where it lives in the crate.
     /// Generates a Fix (insert use statement) when there's a single unambiguous candidate,
     /// or uses smart import resolution when there are multiple candidates.
@@ -1009,6 +1024,20 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
             || self.validator.lookup_in_scope(name).is_some();
 
         if in_scope {
+            return;
+        }
+
+        if let Some(private_in) = self.private_behind_glob(name) {
+            self.validator.diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                file: self.validator.file_path.to_path_buf(),
+                line: span.start().line,
+                column: span.start().column + 1,
+                message: format!("cannot find `{name}` in this scope"),
+                error_code: Some("E0425".to_string()),
+                hint: Some(format!("`{name}` is private in `{private_in}`, a glob does not import it")),
+                fix: None,
+            });
             return;
         }
 
