@@ -157,6 +157,7 @@ impl<'a> ValidationVisitor<'a> {
                                         .is_some_and(|m| {
                                             symbols
                                                 .resolve_item(&m, name, self.module_path, self.crate_name)
+                                                .accessible()
                                                 .is_some()
                                         })
                                 })
@@ -238,7 +239,18 @@ impl<'a> ValidationVisitor<'a> {
                 self.crate_name,
             );
 
-            if found.is_none() {
+            if let Resolved::Inaccessible(_) = found {
+                self.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    file: self.file_path.to_path_buf(),
+                    line: span.start().line,
+                    column: span.start().column + 1,
+                    message: format!("`{}` is private", path.join("::")),
+                    error_code: Some("E0603".to_string()),
+                    hint: None,
+                    fix: None,
+                });
+            } else if let Resolved::NotFound = found {
                 // Find similar names for hint and potential fix
                 let similar = self.find_similar_in_module(&module_path, item_name);
                 let fix = similar.as_ref().and_then(|hint_msg| {
@@ -266,22 +278,6 @@ impl<'a> ValidationVisitor<'a> {
                     hint: similar,
                     fix,
                 });
-            } else {
-                // Item exists — check visibility of items defined in that module
-                if let Some(item) = found.filter(|i| i.module == module_path) {
-                    if !item.vis.accessible_from(&item.module, self.module_path) {
-                        self.diagnostics.push(Diagnostic {
-                            severity: Severity::Error,
-                            file: self.file_path.to_path_buf(),
-                            line: span.start().line,
-                            column: span.start().column + 1,
-                            message: format!("`{}` is private", path.join("::")),
-                            error_code: Some("E0603".to_string()),
-                            hint: None,
-                            fix: None,
-                        });
-                    }
-                }
             }
         } else {
             self.diagnostics.push(Diagnostic {
@@ -325,6 +321,7 @@ impl<'a> ValidationVisitor<'a> {
     fn lookup_in_scope(&self, name: &str) -> Option<&ItemInfo> {
         self.symbols
             .resolve_item(self.module_path, name, self.module_path, self.crate_name)
+            .accessible()
     }
 
     /// Find an item by name across the entire crate (for suggestions).
