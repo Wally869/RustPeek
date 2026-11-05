@@ -155,12 +155,14 @@ impl<'a> ValidationVisitor<'a> {
             syn::UseTree::Name(n) => {
                 let mut full_path = prefix.clone();
                 full_path.push(n.ident.to_string());
-                self.check_use_path(&full_path, n.ident.span());
+                let use_vis = Vis::from_syn(&use_item.vis, &self.module_path);
+                self.check_use_path(&full_path, n.ident.span(), &use_vis);
             }
             syn::UseTree::Rename(r) => {
                 let mut full_path = prefix.clone();
                 full_path.push(r.ident.to_string());
-                self.check_use_path(&full_path, r.ident.span());
+                let use_vis = Vis::from_syn(&use_item.vis, &self.module_path);
+                self.check_use_path(&full_path, r.ident.span(), &use_vis);
             }
             syn::UseTree::Glob(_) => {
                 if is_crate_path(prefix, self.crate_name) {
@@ -231,8 +233,38 @@ impl<'a> ValidationVisitor<'a> {
         }
     }
 
+    fn check_reexport_visibility(
+        &mut self,
+        item: &ItemInfo,
+        use_vis: &Vis,
+        span: proc_macro2::Span,
+    ) {
+        let Vis::Restricted(item_scope) = &item.vis else {
+            return;
+        };
+        let wider = match use_vis {
+            Vis::Public => true,
+            Vis::Restricted(use_scope) => !use_scope.0.starts_with(&item_scope.0),
+        };
+        if !wider {
+            return;
+        }
+        let code = if item.kind == ItemKind::Module { "E0365" } else { "E0364" };
+        let message = reexport_message(&item.name, item_scope);
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            file: self.file_path.to_path_buf(),
+            line: span.start().line,
+            column: span.start().column + 1,
+            message,
+            error_code: Some(code.to_string()),
+            hint: None,
+            fix: None,
+        });
+    }
+
     /// Check if a `use` path resolves within the crate.
-    fn check_use_path(&mut self, path: &[String], span: proc_macro2::Span) {
+    fn check_use_path(&mut self, path: &[String], span: proc_macro2::Span, use_vis: &Vis) {
         if !is_crate_path(path, self.crate_name) {
             return;
         }
@@ -322,6 +354,8 @@ impl<'a> ValidationVisitor<'a> {
                     hint: similar,
                     fix,
                 });
+            } else if let Resolved::Accessible(item) = found {
+                self.check_reexport_visibility(item, use_vis, span);
             }
         } else {
             self.diagnostics.push(Diagnostic {
@@ -650,6 +684,14 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
 }
 
 /// Check if a path starts with `crate`, `self`, `super`, or the crate's own name.
+fn reexport_message(name: &str, item_scope: &ModulePath) -> String {
+    if *item_scope == ModulePath::root() {
+        format!("`{name}` is only public within the crate, and cannot be re-exported outside")
+    } else {
+        format!("`{name}` is private, and cannot be re-exported")
+    }
+}
+
 fn is_crate_path(path: &[String], crate_name: Option<&str>) -> bool {
     path.first().is_some_and(|s| {
         s == "crate" || s == "self" || s == "super"

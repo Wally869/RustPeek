@@ -10,4 +10,5 @@ mod private_reexports;
 mod mod_privacy_errors;
 mod glob_privacy_errors;
 mod pub_in_errors;
+mod reexport_vis_errors;
 fn main() {}

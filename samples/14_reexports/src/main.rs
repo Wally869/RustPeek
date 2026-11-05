@@ -9,6 +9,7 @@ mod crate_vis;
 mod mod_privacy;
 mod glob_privacy;
 mod pub_in;
+mod reexport_vis;
 use crate::crate_vis::C;
 use crate::inline_mods::hub::Packet;
 use crate::inline_mods::named::Frame;
