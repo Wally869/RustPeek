@@ -590,6 +590,10 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     }
 
     fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+        if node.qself.is_none() {
+            self.check_path_modules(&node.path);
+        }
+
         // Check enum variant paths like `Foo::Bar`
         if node.path.segments.len() == 2 {
             let type_name = node.path.segments[0].ident.to_string();
@@ -650,6 +654,10 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     }
 
     fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
+        if node.qself.is_none() {
+            self.check_path_modules(&node.path);
+        }
+
         if node.qself.is_none() && node.path.segments.len() == 1 {
             let name = node.path.segments[0].ident.to_string();
             if name.starts_with(char::is_uppercase) {
@@ -689,6 +697,57 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
 }
 
 impl<'a, 'b> RefVisitor<'a, 'b> {
+    /// E0433 for an expression or type path whose module part names nothing in the crate.
+    fn check_path_modules(&mut self, path: &syn::Path) {
+        let names: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        if names.len() < 2 || !is_crate_path(&names, self.validator.crate_name) {
+            return;
+        }
+        let symbols = self.validator.symbols;
+        let Some(abs) = symbols.resolve_use_path(
+            &self.validator.module_path,
+            &names,
+            self.validator.crate_name,
+        ) else {
+            return;
+        };
+        if abs.first().map(String::as_str) != Some("crate") {
+            return;
+        }
+        let skipped = names.len() as isize - abs.len() as isize;
+        let mut current = ModulePath::root();
+        for index in 1..abs.len() - 1 {
+            let segment = &abs[index];
+            let found = symbols.resolve_item(
+                &current,
+                segment,
+                &self.validator.module_path,
+                self.validator.crate_name,
+            );
+            let Some(item) = found.item() else {
+                let span = path.segments[(index as isize + skipped) as usize].ident.span();
+                self.validator.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    file: self.validator.file_path.to_path_buf(),
+                    line: span.start().line,
+                    column: span.start().column + 1,
+                    message: format!(
+                        "failed to resolve: could not find `{segment}` in `{}`",
+                        abs[index - 1]
+                    ),
+                    error_code: Some("E0433".to_string()),
+                    hint: None,
+                    fix: None,
+                });
+                return;
+            };
+            if item.kind != ItemKind::Module {
+                return;
+            }
+            current = item.module.child(&item.name);
+        }
+    }
+
     /// Check if a type name is in scope; if not, suggest where it lives in the crate.
     /// Generates a Fix (insert use statement) when there's a single unambiguous candidate,
     /// or uses smart import resolution when there are multiple candidates.
