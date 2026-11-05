@@ -784,10 +784,12 @@ impl<'a> ValidationVisitor<'a> {
     /// Find an item by name across the entire crate (for suggestions).
     fn find_anywhere(&self, name: &str) -> Vec<(&ModulePath, &ItemInfo)> {
         let mut results = Vec::new();
-        for (mod_path, module_info) in &self.symbols.modules {
+        // `item.module`, not the file's module: an item of an inline `mod` lives in its
+        // file's module info, tagged with the inline module path.
+        for module_info in self.symbols.modules.values() {
             for item in &module_info.items {
                 if item.name == name {
-                    results.push((mod_path, item));
+                    results.push((&item.module, item));
                 }
             }
         }
