@@ -259,6 +259,8 @@ pub struct ModuleInfo {
     pub file_path: PathBuf,
     /// mod declarations in this module (child module names)
     pub child_modules: Vec<String>,
+    /// This module and its inline modules that hold an item-level macro invocation
+    pub macro_modules: Vec<ModulePath>,
 }
 
 /// The full crate symbol table
@@ -600,6 +602,14 @@ impl SymbolTable {
             walk.reached = item.module.child(&item.name);
         }
         walk
+    }
+
+    /// Whether `module` holds an item-level macro invocation, which may define any item.
+    pub fn has_macro_call(&self, module: &ModulePath) -> bool {
+        self.modules
+            .get(module)
+            .or_else(|| self.enclosing_file_module(module))
+            .is_some_and(|info| info.macro_modules.contains(module))
     }
 
     /// The module item `name` declared directly in `module`, if any.

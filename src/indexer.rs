@@ -188,6 +188,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
                 info.items.extend(child_info.items);
                 info.uses.extend(child_info.uses);
                 info.impls.extend(child_info.impls);
+                info.macro_modules.extend(child_info.macro_modules);
             } else {
                 // External module declaration
                 info.items.push(ItemInfo {
@@ -259,6 +260,10 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
         }
 
         syn::Item::Macro(m) => {
+            if m.ident.is_none() {
+                // An invocation the tool cannot expand: it may define any item.
+                info.macro_modules.push(module_path.clone());
+            }
             if let Some(ident) = &m.ident {
                 info.items.push(ItemInfo {
                     name: ident.to_string(),

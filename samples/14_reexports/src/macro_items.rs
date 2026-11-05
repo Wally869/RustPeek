@@ -43,6 +43,36 @@ mod spans {
     }
 }
 
+macro_rules! make_unit {
+    ($name:ident) => {
+        pub struct $name;
+        impl $name {
+            pub fn make() -> $name {
+                $name
+            }
+        }
+    };
+}
+
+// A macro invoked in a fn body defines items of that block (bitflags tests).
+pub fn block_macro() {
+    make_unit! { Local }
+    let _ = Local::make();
+}
+
+// A glob of a module whose macro invocation defines the name.
+mod glob_of_generated {
+    use super::made::*;
+
+    pub fn take() -> Made {
+        Made::make()
+    }
+}
+
+mod made {
+    make_unit!(Made);
+}
+
 mod generated {
     make_struct!(Flags);
 

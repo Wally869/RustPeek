@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use quote::ToTokens;
@@ -16,10 +15,7 @@ pub fn validate_file(
     owned_dir: &Path,
     crate_name: Option<&str>,
 ) -> Vec<Diagnostic> {
-    let mut macro_modules = HashSet::new();
-    collect_macro_modules(&ast.items, module_path, &mut macro_modules);
     let mut visitor = ValidationVisitor {
-        macro_modules,
         diagnostics: Vec::new(),
         file_path,
         module_path: module_path.clone(),
@@ -110,25 +106,6 @@ struct ValidationVisitor<'a> {
     /// The crate's own name (from Cargo.toml), so `use <name>::...` is treated as `use crate::...`
     crate_name: Option<&'a str>,
     local_scopes: Vec<LocalScope>,
-    /// Modules with an item-level macro invocation, which may define any item.
-    macro_modules: HashSet<ModulePath>,
-}
-
-fn collect_macro_modules(items: &[syn::Item], module: &ModulePath, out: &mut HashSet<ModulePath>) {
-    for item in items {
-        match item {
-            // An invocation, not a `macro_rules!` definition: the tool cannot expand it.
-            syn::Item::Macro(m) if m.ident.is_none() => {
-                out.insert(module.clone());
-            }
-            syn::Item::Mod(m) => {
-                if let Some((_, inner)) = &m.content {
-                    collect_macro_modules(inner, &module.child(&m.ident.to_string()), out);
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 impl<'a> ValidationVisitor<'a> {
@@ -406,7 +383,7 @@ impl<'a> ValidationVisitor<'a> {
             return false;
         };
         !(self.is_known_crate(first)
-            || self.macro_modules.contains(&self.module_path)
+            || self.symbols.has_macro_call(&self.module_path)
             || self.name_in_scope(first, prefix))
     }
 
@@ -478,7 +455,7 @@ impl<'a> ValidationVisitor<'a> {
         };
         for scope in &self.local_scopes {
             if scope.imports.iter().any(|i| i.name == name)
-                || scope.names.iter().any(|n| n == name)
+                || scope.binds(name)
                 || scope.globs.iter().any(|g| glob_may_bring(g))
             {
                 return true;
@@ -506,7 +483,7 @@ impl<'a> ValidationVisitor<'a> {
         else {
             return true;
         };
-        if self.macro_modules.contains(module) {
+        if self.symbols.has_macro_call(module) {
             return true;
         }
         info.uses.iter().filter(|u| u.module == *module).any(|u| {
@@ -815,7 +792,7 @@ impl<'a> ValidationVisitor<'a> {
         let mut imported = false;
         let symbols = self.symbols;
         for scope in self.local_scopes.iter().rev() {
-            imported |= scope.names.iter().any(|n| n == name);
+            imported |= scope.binds(name);
             for import in scope.imports.iter().filter(|i| i.name == name) {
                 imported = true;
                 if let Some(item) = self.lookup_crate_path(&import.path) {
@@ -1088,8 +1065,15 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
                         collect_local_imports(&u.tree, &mut Vec::new(), &mut scope);
                     }
                     scope.names.extend(declared_item_name(item));
+                    scope.has_macro_items |=
+                        matches!(item, syn::Item::Macro(m) if m.ident.is_none());
                 }
                 syn::Stmt::Local(local) => scope.names.extend(pattern_names(&local.pat)),
+                // Brace-delimited, as item macros are; `println!(..);` defines nothing.
+                syn::Stmt::Macro(m) => {
+                    scope.has_macro_items |=
+                        matches!(m.mac.delimiter, syn::MacroDelimiter::Brace(_));
+                }
                 _ => {}
             }
         }
@@ -1299,7 +1283,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     fn unknown_behind_local_globs(&self, name: &str) -> bool {
         let v = &*self.validator;
         let globs = v.scope_globs();
-        if globs.is_empty() || v.macro_modules.contains(&v.module_path) {
+        if globs.is_empty() || v.symbols.has_macro_call(&v.module_path) {
             return false;
         }
         globs.into_iter().all(|prefix| {
@@ -1319,7 +1303,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
             || self.validator.module_uses().any(|u| !u.is_glob && u.alias == name)
             || self.validator.lookup_in_scope(name).is_some()
             // An item-level macro invocation in this module may define the name.
-            || self.validator.macro_modules.contains(&self.validator.module_path);
+            || self.validator.symbols.has_macro_call(&self.validator.module_path);
 
         if in_scope {
             return;
@@ -1402,6 +1386,15 @@ struct LocalScope {
     globs: Vec<Vec<String>>,
     /// Names bound without a path to resolve: generic parameters, items declared in a block.
     names: Vec<String>,
+    /// The block holds an item-like macro invocation (`m! { .. }`), which may define any item.
+    has_macro_items: bool,
+}
+
+impl LocalScope {
+    /// Whether the scope binds `name` without a path to resolve.
+    fn binds(&self, name: &str) -> bool {
+        self.has_macro_items || self.names.iter().any(|n| n == name)
+    }
 }
 
 fn generic_param_names(generics: &syn::Generics) -> Vec<String> {
