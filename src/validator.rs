@@ -1240,7 +1240,8 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
             line: span.start().line,
             column: span.start().column + 1,
             message: format!("cannot find `{name}` in this scope"),
-            error_code: Some("E0412".to_string()),
+            // rustc 1.101 reports E0425 for a missing type and a missing value alike.
+            error_code: Some("E0425".to_string()),
             hint: Some(hint),
             fix,
         });
