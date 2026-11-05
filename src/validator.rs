@@ -426,12 +426,10 @@ impl<'a> ValidationVisitor<'a> {
                 .resolve_use_path(&self.module_path, prefix, self.crate_name)
                 .and_then(|abs| symbols.walk_path(&abs, &self.module_path, self.crate_name).module());
             match target {
-                Some(module) => {
-                    !matches!(
-                        symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name),
-                        Resolved::NotFound
-                    ) || self.module_may_hide(&module.path, name, &mut Vec::new())
-                }
+                Some(module) => !matches!(
+                    symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name),
+                    Resolved::NotFound
+                ),
                 // Outside the crate: it may bring any name, unless its own first
                 // segment is unknown too (an unresolved glob brings nothing).
                 None => prefix.first().is_some_and(|first| {
@@ -468,41 +466,6 @@ impl<'a> ValidationVisitor<'a> {
         }
         self.module_uses()
             .any(|u| if u.is_glob { glob_may_bring(&u.path) } else { u.alias == name })
-    }
-
-    /// Whether `module` may bring `name` through something the symbol table cannot resolve
-    /// to an item: an import of that name, or a glob reaching outside the crate.
-    fn module_may_hide(&self, module: &ModulePath, name: &str, seen: &mut Vec<ModulePath>) -> bool {
-        if seen.contains(module) {
-            return false;
-        }
-        seen.push(module.clone());
-        let symbols = self.symbols;
-        let Some(info) = symbols.modules.get(module).or_else(|| symbols.enclosing_file_module(module))
-        else {
-            return true;
-        };
-        if self.macro_modules.contains(module) {
-            return true;
-        }
-        info.uses.iter().filter(|u| u.module == *module).any(|u| {
-            if !u.is_glob {
-                return u.alias == name;
-            }
-            let target = symbols
-                .resolve_use_path(module, &u.path, self.crate_name)
-                .and_then(|abs| symbols.walk_path(&abs, module, self.crate_name).module());
-            match target {
-                Some(target) => self.module_may_hide(&target.path, name, seen),
-                None => true,
-            }
-        })
-    }
-
-    /// Paths of the globs in scope: those of the enclosing blocks, then the module's own.
-    fn scope_globs(&self) -> Vec<&[String]> {
-        let block_globs = self.local_scopes.iter().flat_map(|s| s.globs.iter().map(Vec::as_slice));
-        block_globs.chain(self.symbols.glob_paths(&self.module_path)).collect()
     }
 
     /// The `use` items of the current module, including inline modules' own.
@@ -1005,7 +968,9 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
         // Check for unresolved types/paths that exist elsewhere in the crate
         if node.path.segments.len() == 1 {
             let name = node.path.segments[0].ident.to_string();
-            self.check_name_in_scope(&name, node.path.segments[0].ident.span());
+            if name.starts_with(char::is_uppercase) {
+                self.check_type_in_scope(&name, node.path.segments[0].ident.span());
+            }
         }
 
         syn::visit::visit_expr_path(self, node);
@@ -1018,7 +983,9 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
 
         if node.qself.is_none() && node.path.segments.len() == 1 {
             let name = node.path.segments[0].ident.to_string();
-            self.check_name_in_scope(&name, node.path.segments[0].ident.span());
+            if name.starts_with(char::is_uppercase) {
+                self.check_type_in_scope(&name, node.path.segments[0].ident.span());
+            }
         }
 
         syn::visit::visit_type_path(self, node);
@@ -1031,16 +998,13 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     fn visit_block(&mut self, node: &'ast syn::Block) {
         let mut scope = LocalScope::default();
         for stmt in &node.stmts {
-            match stmt {
-                syn::Stmt::Item(item) => {
-                    if let syn::Item::Use(u) = item {
-                        collect_local_imports(&u.tree, &mut Vec::new(), &mut scope);
-                    }
-                    scope.names.extend(declared_item_name(item));
-                }
-                syn::Stmt::Local(local) => scope.names.extend(pattern_names(&local.pat)),
-                _ => {}
+            let syn::Stmt::Item(item) = stmt else {
+                continue;
+            };
+            if let syn::Item::Use(u) = item {
+                collect_local_imports(&u.tree, &mut Vec::new(), &mut scope);
             }
+            scope.names.extend(declared_item_name(item));
         }
         self.validator.local_scopes.push(scope);
         for stmt in &node.stmts {
@@ -1063,27 +1027,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.with_names(signature_names(&node.sig), |v| syn::visit::visit_item_fn(v, node));
-    }
-
-    fn visit_arm(&mut self, node: &'ast syn::Arm) {
-        self.with_names(pattern_names(&node.pat), |v| syn::visit::visit_arm(v, node));
-    }
-
-    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
-        let names = node.inputs.iter().flat_map(pattern_names).collect();
-        self.with_names(names, |v| syn::visit::visit_expr_closure(v, node));
-    }
-
-    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
-        self.with_names(pattern_names(&node.pat), |v| syn::visit::visit_expr_for_loop(v, node));
-    }
-
-    fn visit_expr_let(&mut self, node: &'ast syn::ExprLet) {
-        if let Some(scope) = self.validator.local_scopes.last_mut() {
-            scope.names.extend(pattern_names(&node.pat));
-        }
-        syn::visit::visit_expr_let(self, node);
+        self.with_generics(&node.sig.generics, |v| syn::visit::visit_item_fn(v, node));
     }
 
     fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
@@ -1111,7 +1055,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.with_names(signature_names(&node.sig), |v| syn::visit::visit_impl_item_fn(v, node));
+        self.with_generics(&node.sig.generics, |v| syn::visit::visit_impl_item_fn(v, node));
     }
 
     fn visit_impl_item_type(&mut self, node: &'ast syn::ImplItemType) {
@@ -1119,7 +1063,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        self.with_names(signature_names(&node.sig), |v| syn::visit::visit_trait_item_fn(v, node));
+        self.with_generics(&node.sig.generics, |v| syn::visit::visit_trait_item_fn(v, node));
     }
 
     fn visit_trait_item_type(&mut self, node: &'ast syn::TraitItemType) {
@@ -1129,11 +1073,8 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
 
 impl<'a, 'b> RefVisitor<'a, 'b> {
     fn with_generics(&mut self, generics: &syn::Generics, visit: impl FnOnce(&mut Self)) {
-        self.with_names(generic_param_names(generics), visit);
-    }
-
-    fn with_names(&mut self, names: Vec<String>, visit: impl FnOnce(&mut Self)) {
-        self.validator.local_scopes.push(LocalScope { names, ..LocalScope::default() });
+        let scope = LocalScope { names: generic_param_names(generics), ..LocalScope::default() };
+        self.validator.local_scopes.push(scope);
         visit(self);
         self.validator.local_scopes.pop();
     }
@@ -1141,18 +1082,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     /// E0433 for an expression or type path whose module part names nothing in the crate.
     fn check_path_modules(&mut self, path: &syn::Path) {
         let names: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        if names.len() < 2 {
-            return;
-        }
-        if !self.validator.is_local_path(&names) {
-            let first = names[0].as_str();
-            let defined_elsewhere = !self.validator.find_anywhere(first).is_empty();
-            if !matches!(first, "crate" | "self" | "super")
-                && !PRELUDE_NAMES.contains(&first)
-                && !defined_elsewhere
-            {
-                self.validator.report_unknown_crate(&names, path.segments[0].ident.span());
-            }
+        if names.len() < 2 || !self.validator.is_local_path(&names) {
             return;
         }
         let symbols = self.validator.symbols;
@@ -1234,7 +1164,9 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     fn private_behind_glob(&self, name: &str) -> Option<String> {
         let v = &*self.validator;
         let symbols = v.symbols;
-        v.scope_globs().into_iter().find_map(|prefix| {
+        let block_globs = v.local_scopes.iter().flat_map(|s| s.globs.iter().map(Vec::as_slice));
+        let module_globs = symbols.glob_paths(&v.module_path);
+        block_globs.chain(module_globs).find_map(|prefix| {
             let abs = symbols.resolve_use_path(&v.module_path, prefix, v.crate_name)?;
             let target = symbols.walk_path(&abs, &v.module_path, v.crate_name).module()?;
             match symbols.resolve_item(&target.path, name, &v.module_path, v.crate_name) {
@@ -1244,25 +1176,10 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         })
     }
 
-    /// The scope holds globs, all of them into modules of this crate that cannot hide `name`.
-    fn unknown_behind_local_globs(&self, name: &str) -> bool {
-        let v = &*self.validator;
-        let globs = v.scope_globs();
-        if globs.is_empty() || v.macro_modules.contains(&v.module_path) {
-            return false;
-        }
-        globs.into_iter().all(|prefix| {
-            v.symbols
-                .resolve_use_path(&v.module_path, prefix, v.crate_name)
-                .and_then(|abs| v.symbols.walk_path(&abs, &v.module_path, v.crate_name).module())
-                .is_some_and(|target| !v.module_may_hide(&target.path, name, &mut Vec::new()))
-        })
-    }
-
-    /// Check if a name is in scope; if not, suggest where it lives in the crate.
+    /// Check if a type name is in scope; if not, suggest where it lives in the crate.
     /// Generates a Fix (insert use statement) when there's a single unambiguous candidate,
     /// or uses smart import resolution when there are multiple candidates.
-    fn check_name_in_scope(&mut self, name: &str, span: proc_macro2::Span) {
+    fn check_type_in_scope(&mut self, name: &str, span: proc_macro2::Span) {
         let in_scope = PRELUDE_NAMES.contains(&name)
             || !matches!(self.validator.lookup_local(name), LocalLookup::None)
             || self.validator.module_uses().any(|u| !u.is_glob && u.alias == name)
@@ -1293,19 +1210,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
             .collect();
 
         if candidates.is_empty() {
-            if self.unknown_behind_local_globs(name) {
-                self.validator.diagnostics.push(Diagnostic {
-                    severity: Severity::Error,
-                    file: self.validator.file_path.to_path_buf(),
-                    line: span.start().line,
-                    column: span.start().column + 1,
-                    message: format!("cannot find `{name}` in this scope"),
-                    error_code: Some("E0425".to_string()),
-                    hint: None,
-                    fix: None,
-                });
-            }
-            return; // Not in crate and no glob can hide it: could be external, stay quiet
+            return; // Not in crate — could be external, stay quiet
         }
 
         let (fix, hint) = if candidates.len() == 1 {
@@ -1363,30 +1268,6 @@ fn generic_param_names(generics: &syn::Generics) -> Vec<String> {
         .collect()
 }
 
-fn pattern_names(pat: &syn::Pat) -> Vec<String> {
-    struct Collector(Vec<String>);
-    impl<'ast> Visit<'ast> for Collector {
-        fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
-            self.0.push(node.ident.to_string());
-            syn::visit::visit_pat_ident(self, node);
-        }
-    }
-    let mut collector = Collector(Vec::new());
-    collector.visit_pat(pat);
-    collector.0
-}
-
-fn signature_names(sig: &syn::Signature) -> Vec<String> {
-    let mut names = generic_param_names(&sig.generics);
-    for arg in &sig.inputs {
-        match arg {
-            syn::FnArg::Receiver(_) => names.push("self".to_string()),
-            syn::FnArg::Typed(typed) => names.extend(pattern_names(&typed.pat)),
-        }
-    }
-    names
-}
-
 fn declared_item_name(item: &syn::Item) -> Option<String> {
     let ident = match item {
         syn::Item::Const(i) => &i.ident,
@@ -1413,7 +1294,6 @@ const PRELUDE_NAMES: &[&str] = &[
     "IntoIterator", "DoubleEndedIterator", "ExactSizeIterator", "Extend",
     "bool", "char", "str", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize",
     "u8", "u16", "u32", "u64", "u128", "usize",
-    "drop", "size_of", "size_of_val", "align_of", "align_of_val", "Future", "IntoFuture",
 ];
 
 struct LocalImport {
