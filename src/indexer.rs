@@ -196,7 +196,7 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
 
         syn::Item::Use(u) => {
             let vis = Vis::from_syn(&u.vis);
-            collect_use_tree(&u.tree, &mut Vec::new(), info, &vis);
+            collect_use_tree(&u.tree, &mut Vec::new(), info, &vis, module_path);
         }
 
         syn::Item::Impl(imp) => {
@@ -273,11 +273,11 @@ fn extract_type_name(ty: &syn::Type) -> Option<String> {
 }
 
 /// Recursively collect use statements from a use tree.
-fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut ModuleInfo, vis: &Vis) {
+fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut ModuleInfo, vis: &Vis, module: &ModulePath) {
     match tree {
         syn::UseTree::Path(p) => {
             prefix.push(p.ident.to_string());
-            collect_use_tree(&p.tree, prefix, info, vis);
+            collect_use_tree(&p.tree, prefix, info, vis, module);
             prefix.pop();
         }
         syn::UseTree::Name(n) => {
@@ -289,6 +289,7 @@ fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut Mo
                 alias,
                 is_glob: false,
                 vis: vis.clone(),
+                module: module.clone(),
             });
         }
         syn::UseTree::Rename(r) => {
@@ -300,6 +301,7 @@ fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut Mo
                 alias,
                 is_glob: false,
                 vis: vis.clone(),
+                module: module.clone(),
             });
         }
         syn::UseTree::Glob(_) => {
@@ -308,11 +310,12 @@ fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, info: &mut Mo
                 alias: String::new(),
                 is_glob: true,
                 vis: vis.clone(),
+                module: module.clone(),
             });
         }
         syn::UseTree::Group(g) => {
             for tree in &g.items {
-                collect_use_tree(tree, prefix, info, vis);
+                collect_use_tree(tree, prefix, info, vis, module);
             }
         }
     }

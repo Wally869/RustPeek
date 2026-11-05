@@ -147,6 +147,8 @@ pub struct UseInfo {
     pub is_glob: bool,
     /// Visibility of the use statement (for re-exports via `pub use`)
     pub vis: Vis,
+    /// The module declaring the use (an inline module for uses inside `mod x { }`)
+    pub module: ModulePath,
 }
 
 /// An impl block
@@ -291,11 +293,8 @@ impl SymbolTable {
         if let Some(item) = info.items.iter().find(|i| i.name == name && i.module == *module) {
             return Some(item);
         }
-        if !self.modules.contains_key(module) {
-            return None;
-        }
 
-        for use_info in &info.uses {
+        for use_info in info.uses.iter().filter(|u| u.module == *module) {
             if use_info.is_glob
                 || use_info.alias != name
                 || !use_info.vis.accessible_from(module, accessor)
@@ -310,7 +309,7 @@ impl SymbolTable {
             }
         }
 
-        for use_info in &info.uses {
+        for use_info in info.uses.iter().filter(|u| u.module == *module) {
             if !use_info.is_glob || !use_info.vis.accessible_from(module, accessor) {
                 continue;
             }
@@ -342,12 +341,19 @@ impl SymbolTable {
         None
     }
 
-    /// Does `module` exist: a indexed file module, or an inline module holding items.
+    /// Does `module` exist: an indexed file module, or an inline module declared in its parent.
     pub fn module_exists(&self, module: &ModulePath) -> bool {
-        self.modules.contains_key(module)
-            || self
-                .enclosing_file_module(module)
-                .is_some_and(|info| info.items.iter().any(|i| i.module == *module))
+        if self.modules.contains_key(module) {
+            return true;
+        }
+        let (Some(parent), Some(name)) = (module.parent(), module.0.last()) else {
+            return false;
+        };
+        self.enclosing_file_module(module).is_some_and(|info| {
+            info.items
+                .iter()
+                .any(|i| i.kind == ItemKind::Module && i.module == parent && i.name == *name)
+        })
     }
 
     fn resolve_abs_item(
