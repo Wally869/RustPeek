@@ -276,25 +276,8 @@ impl<'a> ValidationVisitor<'a> {
                             fix: None,
                         });
                     }
-                } else if self.is_unknown_external_crate(prefix) {
-                    // rustc: E0432 for `use missing::*;`, E0433 when more segments follow
-                    // the unknown crate (`use missing::sub::*;`).
-                    let (message, code) = if prefix.len() > 1 {
-                        (format!("cannot find module or crate `{}`", prefix[0]), "E0433")
-                    } else {
-                        (format!("unresolved import `{}`", prefix[0]), "E0432")
-                    };
-                    let span = use_item.use_token.span;
-                    self.diagnostics.push(Diagnostic {
-                        severity: Severity::Error,
-                        file: self.file_path.to_path_buf(),
-                        line: span.start().line,
-                        column: span.start().column + 1,
-                        message,
-                        error_code: Some(code.to_string()),
-                        hint: None,
-                        fix: None,
-                    });
+                } else {
+                    self.report_unknown_crate(prefix, use_item.use_token.span);
                 }
             }
             syn::UseTree::Group(g) => {
@@ -384,18 +367,42 @@ impl<'a> ValidationVisitor<'a> {
                     .is_some())
     }
 
-    /// The first segment of a non-local glob prefix names no crate and nothing in scope.
-    /// Off when the dependency list is unknown.
-    fn is_unknown_external_crate(&self, glob_prefix: &[String]) -> bool {
+    /// The first segment of a non-local `use` prefix (the path without a glob or the
+    /// imported name) names no crate and nothing in scope. Off when the dependency
+    /// list is unknown.
+    fn is_unknown_external_crate(&self, prefix: &[String]) -> bool {
         if self.external_crates.is_none() {
             return false;
         }
-        let Some(first) = glob_prefix.first() else {
+        let Some(first) = prefix.first() else {
             return false;
         };
         !(self.is_known_crate(first)
             || self.macro_modules.contains(&self.module_path)
-            || self.name_in_scope(first, glob_prefix))
+            || self.name_in_scope(first, prefix))
+    }
+
+    /// Reports a non-local `use` whose first segment is unknown. rustc: E0432 when the
+    /// unknown crate is the last segment of the prefix, E0433 when more segments follow.
+    fn report_unknown_crate(&mut self, prefix: &[String], span: proc_macro2::Span) {
+        if !self.is_unknown_external_crate(prefix) {
+            return;
+        }
+        let (message, code) = if prefix.len() > 1 {
+            (format!("cannot find module or crate `{}`", prefix[0]), "E0433")
+        } else {
+            (format!("unresolved import `{}`", prefix[0]), "E0432")
+        };
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            file: self.file_path.to_path_buf(),
+            line: span.start().line,
+            column: span.start().column + 1,
+            message,
+            error_code: Some(code.to_string()),
+            hint: None,
+            fix: None,
+        });
     }
 
     /// A crate name the current crate can use without `extern crate`.
@@ -462,14 +469,18 @@ impl<'a> ValidationVisitor<'a> {
 
     /// Check if a `use` path resolves within the crate.
     fn check_use_path(&mut self, path: &[String], span: proc_macro2::Span, use_vis: &Vis) {
-        if path.len() == 2 && !self.is_local_path(path) {
-            // Bare `Enum::Variant` of an enum defined in the current module
-            let mut absolute = self.module_path.0.clone();
-            absolute.extend(path.iter().cloned());
-            self.check_variant_use(path, &absolute, span, use_vis);
-            return;
-        }
         if !self.is_local_path(path) {
+            if path.len() == 2 {
+                // Bare `Item::name` of an item defined in the current module
+                let mut absolute = self.module_path.0.clone();
+                absolute.extend(path.iter().cloned());
+                if self.check_variant_use(path, &absolute, span, use_vis) {
+                    return;
+                }
+            }
+            if let Some((_, prefix)) = path.split_last() {
+                self.report_unknown_crate(prefix, span);
+            }
             return;
         }
 
@@ -616,10 +627,24 @@ impl<'a> ValidationVisitor<'a> {
             }
             Resolved::Inaccessible(_) => return false,
             Resolved::Accessible(item) => {
-                if item.kind != ItemKind::Enum {
+                if !parent.accessible && item.kind != ItemKind::Enum {
                     return false;
                 }
-                if !parent.accessible {
+                if item.kind == ItemKind::Trait {
+                    // Trait members are not recorded, so a missing member (rustc: E0432)
+                    // is not told apart from an existing one.
+                    (
+                        "`use` associated items of traits is unstable".to_string(),
+                        "E0658",
+                    )
+                } else if matches!(item.kind, ItemKind::Macro | ItemKind::Module) {
+                    return false;
+                } else if item.kind != ItemKind::Enum {
+                    (
+                        format!("unresolved import `{}`", path[..path.len() - 1].join("::")),
+                        "E0432",
+                    )
+                } else if !parent.accessible {
                     (format!("enum `{}` is private", enum_name), "E0603")
                 } else if let Some(variant) = item.variants.iter().find(|v| &v.name == variant_name) {
                     self.check_reexport_visibility(

@@ -17,6 +17,7 @@ mod vis_past_root_errors;
 mod bare_glob_errors;
 mod bare_path_errors;
 mod unknown_glob_errors;
+mod unknown_use_errors;
 mod variant_reexport_errors;
 mod glob_private_name_errors;
 mod expr_privacy_errors;
