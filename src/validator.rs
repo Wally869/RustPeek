@@ -31,6 +31,13 @@ pub fn validate_file(
     visitor.diagnostics
 }
 
+#[derive(PartialEq, Eq)]
+enum GlobOutcome {
+    Resolved,
+    Private,
+    Unresolved,
+}
+
 struct ValidationVisitor<'a> {
     diagnostics: Vec<Diagnostic>,
     file_path: &'a Path,
@@ -157,26 +164,20 @@ impl<'a> ValidationVisitor<'a> {
             }
             syn::UseTree::Glob(_) => {
                 if is_crate_path(prefix, self.crate_name) {
-                    let symbols = self.symbols;
-                    let resolves = symbols
-                        .resolve_use_path(&self.module_path, prefix, self.crate_name)
-                        .is_some_and(|abs| {
-                            let is_module = symbols
-                                .resolve_module(&abs, &self.module_path, self.crate_name)
-                                .is_some_and(|m| symbols.module_exists(&m));
-                            is_module
-                                || abs.split_last().is_some_and(|(name, module_part)| {
-                                    symbols
-                                        .resolve_module(module_part, &self.module_path, self.crate_name)
-                                        .is_some_and(|m| {
-                                            symbols
-                                                .resolve_item(&m, name, &self.module_path, self.crate_name)
-                                                .accessible()
-                                                .is_some()
-                                        })
-                                })
+                    let outcome = self.glob_outcome(prefix);
+                    if outcome == GlobOutcome::Private {
+                        let span = use_item.use_token.span;
+                        self.diagnostics.push(Diagnostic {
+                            severity: Severity::Error,
+                            file: self.file_path.to_path_buf(),
+                            line: span.start().line,
+                            column: span.start().column + 1,
+                            message: format!("`{}` is private", prefix.join("::")),
+                            error_code: Some("E0603".to_string()),
+                            hint: None,
+                            fix: None,
                         });
-                    if !resolves {
+                    } else if outcome == GlobOutcome::Unresolved {
                         let span = use_item.use_token.span;
                         self.diagnostics.push(Diagnostic {
                             severity: Severity::Error,
@@ -199,6 +200,34 @@ impl<'a> ValidationVisitor<'a> {
                     self.validate_use_tree(tree, prefix, use_item);
                 }
             }
+        }
+    }
+
+    fn glob_outcome(&self, prefix: &[String]) -> GlobOutcome {
+        let symbols = self.symbols;
+        let Some(abs) = symbols.resolve_use_path(&self.module_path, prefix, self.crate_name)
+        else {
+            return GlobOutcome::Unresolved;
+        };
+        if let Some(module) = symbols
+            .resolve_module(&abs, &self.module_path, self.crate_name)
+            .filter(|m| symbols.module_exists(&m.path))
+        {
+            return if module.accessible { GlobOutcome::Resolved } else { GlobOutcome::Private };
+        }
+        let Some((name, module_part)) = abs.split_last() else {
+            return GlobOutcome::Unresolved;
+        };
+        let Some(module) = symbols.resolve_module(module_part, &self.module_path, self.crate_name)
+        else {
+            return GlobOutcome::Unresolved;
+        };
+        if !module.accessible {
+            return GlobOutcome::Private;
+        }
+        match symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name) {
+            Resolved::Accessible(_) => GlobOutcome::Resolved,
+            Resolved::Inaccessible(_) | Resolved::NotFound => GlobOutcome::Unresolved,
         }
     }
 
@@ -239,11 +268,12 @@ impl<'a> ValidationVisitor<'a> {
         let module_segments = &resolved[..resolved.len() - 1];
         let resolved_module = symbols
             .resolve_module(module_segments, &self.module_path, self.crate_name)
-            .filter(|m| symbols.module_exists(m));
+            .filter(|m| symbols.module_exists(&m.path));
 
-        if let Some(module_path) = resolved_module {
+        if let Some(module) = resolved_module {
+            let module_path = module.path;
             // `use foo::self` means "import the module itself"
-            if item_name == "self" {
+            if item_name == "self" && module.accessible {
                 return;
             }
             let found = symbols.resolve_item(
@@ -253,7 +283,7 @@ impl<'a> ValidationVisitor<'a> {
                 self.crate_name,
             );
 
-            if let Resolved::Inaccessible(_) = found {
+            if !module.accessible || matches!(found, Resolved::Inaccessible(_)) {
                 self.diagnostics.push(Diagnostic {
                     severity: Severity::Error,
                     file: self.file_path.to_path_buf(),

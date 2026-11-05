@@ -96,6 +96,14 @@ pub enum Resolved<'a> {
     NotFound,
 }
 
+/// A module reached by a path. `accessible` is false when a module along the path is not
+/// visible to the accessor.
+#[derive(Debug, Clone)]
+pub struct ResolvedModule {
+    pub path: ModulePath,
+    pub accessible: bool,
+}
+
 impl<'a> Resolved<'a> {
     fn of(item: &'a ItemInfo, accessible: bool) -> Self {
         if accessible { Resolved::Accessible(item) } else { Resolved::Inaccessible(item) }
@@ -284,7 +292,7 @@ impl SymbolTable {
         abs: &[String],
         accessor: &ModulePath,
         crate_name: Option<&str>,
-    ) -> Option<ModulePath> {
+    ) -> Option<ResolvedModule> {
         self.resolve_module_in(abs, accessor, crate_name, &mut HashSet::new())
     }
 
@@ -332,7 +340,7 @@ impl SymbolTable {
                 continue;
             };
             let reachable = use_info.vis.accessible_from(module, accessor);
-            match self.resolve_abs_item(&abs, accessor, crate_name, in_progress) {
+            match self.resolve_abs_item(&abs, module, accessor, crate_name, in_progress) {
                 Resolved::Accessible(item) if reachable => return Resolved::Accessible(item),
                 Resolved::Accessible(item) | Resolved::Inaccessible(item) => {
                     inaccessible.get_or_insert(item);
@@ -348,14 +356,17 @@ impl SymbolTable {
             let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
                 continue;
             };
-            let Some(target) = self.resolve_module_in(&abs, accessor, crate_name, in_progress)
+            let Some(target) = self.resolve_module_in(&abs, module, crate_name, in_progress)
             else {
                 continue;
             };
             if let Resolved::Accessible(item) =
-                self.resolve_item_in(&target, name, accessor, crate_name, in_progress)
+                self.resolve_item_in(&target.path, name, accessor, crate_name, in_progress)
             {
-                return Resolved::Accessible(item);
+                if target.accessible {
+                    return Resolved::Accessible(item);
+                }
+                inaccessible.get_or_insert(item);
             }
         }
         match inaccessible {
@@ -390,9 +401,12 @@ impl SymbolTable {
         })
     }
 
+    /// `path_accessor` is the module the path is written in (it sees the modules along the path);
+    /// `accessor` is the module the final lookup is made from.
     fn resolve_abs_item(
         &self,
         abs: &[String],
+        path_accessor: &ModulePath,
         accessor: &ModulePath,
         crate_name: Option<&str>,
         in_progress: &mut HashSet<(ModulePath, String)>,
@@ -404,11 +418,15 @@ impl SymbolTable {
         let Some((name, module_part)) = abs.split_last() else {
             return Resolved::NotFound;
         };
-        let Some(module) = self.resolve_module_in(module_part, accessor, crate_name, in_progress)
+        let Some(module) =
+            self.resolve_module_in(module_part, path_accessor, crate_name, in_progress)
         else {
             return Resolved::NotFound;
         };
-        self.resolve_item_in(&module, name, accessor, crate_name, in_progress)
+        match self.resolve_item_in(&module.path, name, accessor, crate_name, in_progress) {
+            Resolved::Accessible(item) if !module.accessible => Resolved::Inaccessible(item),
+            found => found,
+        }
     }
 
     fn resolve_module_in(
@@ -417,21 +435,22 @@ impl SymbolTable {
         accessor: &ModulePath,
         crate_name: Option<&str>,
         in_progress: &mut HashSet<(ModulePath, String)>,
-    ) -> Option<ModulePath> {
+    ) -> Option<ResolvedModule> {
         if abs.first().map(String::as_str) != Some("crate") {
             return None;
         }
         let mut current = ModulePath::root();
+        let mut accessible = true;
         for segment in &abs[1..] {
-            let item = self
-                .resolve_item_in(&current, segment, accessor, crate_name, in_progress)
-                .item()?;
+            let found = self.resolve_item_in(&current, segment, accessor, crate_name, in_progress);
+            accessible &= matches!(found, Resolved::Accessible(_));
+            let item = found.item()?;
             if item.kind != ItemKind::Module {
                 return None;
             }
             current = item.module.child(&item.name);
         }
-        Some(current)
+        Some(ResolvedModule { path: current, accessible })
     }
 
     /// Find impl methods for a type name
