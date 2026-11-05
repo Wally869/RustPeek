@@ -1,5 +1,6 @@
 extern crate alloc;
 mod ast;
+mod path_calls;
 mod a;
 mod other;
 mod cyc;

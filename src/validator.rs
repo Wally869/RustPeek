@@ -720,25 +720,37 @@ impl<'a> ValidationVisitor<'a> {
             .accessible()
     }
 
+    /// Resolve a path written in the current module through its own segments: a single
+    /// name is looked up in scope; a longer path must name a crate module then an item in
+    /// it. `None` for a path through a type (`Type::f`), an external path or a missing item.
+    fn lookup_path(&self, path: &[String]) -> Option<&ItemInfo> {
+        match path {
+            [name] => self.lookup_in_scope(name),
+            _ => self.lookup_crate_path(path),
+        }
+    }
+
+    /// The accessible item a `use`-style path names, when every segment before the last
+    /// is a crate module.
+    fn lookup_crate_path(&self, path: &[String]) -> Option<&ItemInfo> {
+        let symbols = self.symbols;
+        let abs = symbols.resolve_use_path(&self.module_path, path, self.crate_name)?;
+        let (item_name, module_part) = abs.split_last()?;
+        let module = symbols.walk_path(module_part, &self.module_path, self.crate_name).module()?;
+        symbols
+            .resolve_item(&module.path, item_name, &self.module_path, self.crate_name)
+            .accessible()
+    }
+
     /// Names brought in by `use` items of the enclosing blocks, innermost first.
     fn lookup_local(&self, name: &str) -> LocalLookup<'_> {
-        let symbols = self.symbols;
         let mut imported = false;
+        let symbols = self.symbols;
         for scope in self.local_scopes.iter().rev() {
             imported |= scope.names.iter().any(|n| n == name);
             for import in scope.imports.iter().filter(|i| i.name == name) {
                 imported = true;
-                let item = symbols
-                    .resolve_use_path(&self.module_path, &import.path, self.crate_name)
-                    .and_then(|abs| {
-                        let (item_name, module_part) = abs.split_last()?;
-                        let module =
-                            symbols.walk_path(module_part, &self.module_path, self.crate_name).module()?;
-                        symbols
-                            .resolve_item(&module.path, item_name, &self.module_path, self.crate_name)
-                            .accessible()
-                    });
-                if let Some(item) = item {
+                if let Some(item) = self.lookup_crate_path(&import.path) {
                     return LocalLookup::Item(item);
                 }
             }
@@ -882,8 +894,10 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = &*node.func {
-            if let Some(fn_name) = path_last_segment(&path.path) {
-                if let Some(item) = self.validator.lookup_in_scope(&fn_name)
+            let names: Vec<String> =
+                path.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if let Some(fn_name) = path_last_segment(&path.path).filter(|_| path.qself.is_none()) {
+                if let Some(item) = self.validator.lookup_path(&names)
                     .filter(|i| i.kind == ItemKind::Function)
                 {
                     if let Some(expected) = item.param_count {
@@ -917,8 +931,10 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
             self.check_path_modules(&node.path);
         }
 
-        // Check enum variant paths like `Foo::Bar`
-        if node.path.segments.len() == 2 {
+        // Check enum variant paths like `Foo::Bar`. Only a variant-like (UpperCamelCase) name
+        // is checked: a lowercase or all-caps name is an associated fn or const, which a
+        // trait impl, a derive or a blanket impl outside the index may provide.
+        if node.path.segments.len() == 2 && is_variant_like(&node.path.segments[1].ident.to_string()) {
             let type_name = node.path.segments[0].ident.to_string();
             let variant_name = node.path.segments[1].ident.to_string();
 
@@ -1366,6 +1382,12 @@ fn is_crate_path(path: &[String], crate_name: Option<&str>) -> bool {
 }
 
 /// Get the last segment name from a path.
+/// An UpperCamelCase name, as enum variants are written: an uppercase first letter and at
+/// least one lowercase letter (`Red`). A one-letter or all-caps name is read as a const.
+fn is_variant_like(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_uppercase()) && name.chars().any(|c| c.is_ascii_lowercase())
+}
+
 fn path_last_segment(path: &syn::Path) -> Option<String> {
     path.segments.last().map(|s| s.ident.to_string())
 }
