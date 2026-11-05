@@ -341,16 +341,6 @@ impl SymbolTable {
         (found, walk.links)
     }
 
-    /// Resolve a module reached by an absolute path, going through re-exported modules.
-    pub fn resolve_module(
-        &self,
-        abs: &[String],
-        accessor: &ModulePath,
-        crate_name: Option<&str>,
-    ) -> Option<ResolvedModule> {
-        self.walk_path(abs, accessor, crate_name).module()
-    }
-
     fn resolve_item_in(
         &self,
         module: &ModulePath,

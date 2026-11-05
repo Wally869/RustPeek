@@ -423,7 +423,7 @@ impl<'a> ValidationVisitor<'a> {
             }
             let target = symbols
                 .resolve_use_path(&self.module_path, prefix, self.crate_name)
-                .and_then(|abs| symbols.resolve_module(&abs, &self.module_path, self.crate_name));
+                .and_then(|abs| symbols.walk_path(&abs, &self.module_path, self.crate_name).module());
             match target {
                 Some(module) => !matches!(
                     symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name),
@@ -517,7 +517,8 @@ impl<'a> ValidationVisitor<'a> {
         let item_name = &resolved[resolved.len() - 1];
         let module_segments = &resolved[..resolved.len() - 1];
         let resolved_module = symbols
-            .resolve_module(module_segments, &self.module_path, self.crate_name)
+            .walk_path(module_segments, &self.module_path, self.crate_name)
+            .module()
             .filter(|m| symbols.module_exists(&m.path));
 
         if let Some(module) = resolved_module {
@@ -612,7 +613,8 @@ impl<'a> ValidationVisitor<'a> {
         let enum_name = &resolved[resolved.len() - 2];
         let parent_segments = &resolved[..resolved.len() - 2];
         let Some(parent) = symbols
-            .resolve_module(parent_segments, &self.module_path, self.crate_name)
+            .walk_path(parent_segments, &self.module_path, self.crate_name)
+            .module()
             .filter(|m| symbols.module_exists(&m.path))
         else {
             return false;
@@ -723,7 +725,7 @@ impl<'a> ValidationVisitor<'a> {
                     .and_then(|abs| {
                         let (item_name, module_part) = abs.split_last()?;
                         let module =
-                            symbols.resolve_module(module_part, &self.module_path, self.crate_name)?;
+                            symbols.walk_path(module_part, &self.module_path, self.crate_name).module()?;
                         symbols
                             .resolve_item(&module.path, item_name, &self.module_path, self.crate_name)
                             .accessible()
@@ -736,7 +738,7 @@ impl<'a> ValidationVisitor<'a> {
                 let target = symbols
                     .resolve_use_path(&self.module_path, prefix, self.crate_name)
                     .and_then(|abs| {
-                        symbols.resolve_module(&abs, &self.module_path, self.crate_name)
+                        symbols.walk_path(&abs, &self.module_path, self.crate_name).module()
                     });
                 match target {
                     Some(module) => {
@@ -1103,7 +1105,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         let module_globs = symbols.glob_paths(&v.module_path);
         block_globs.chain(module_globs).find_map(|prefix| {
             let abs = symbols.resolve_use_path(&v.module_path, prefix, v.crate_name)?;
-            let target = symbols.resolve_module(&abs, &v.module_path, v.crate_name)?;
+            let target = symbols.walk_path(&abs, &v.module_path, v.crate_name).module()?;
             match symbols.resolve_item(&target.path, name, &v.module_path, v.crate_name) {
                 Resolved::Inaccessible(_) => Some(target.path.display()),
                 _ => None,
