@@ -22,6 +22,7 @@ pub fn validate_file(
         src_dir,
         source_lines: None,
         crate_name,
+        local_scopes: Vec::new(),
     };
 
     visitor.validate_mod_declarations(ast);
@@ -49,6 +50,7 @@ struct ValidationVisitor<'a> {
     source_lines: Option<Vec<String>>,
     /// The crate's own name (from Cargo.toml), so `use <name>::...` is treated as `use crate::...`
     crate_name: Option<&'a str>,
+    local_scopes: Vec<LocalScope>,
 }
 
 impl<'a> ValidationVisitor<'a> {
@@ -397,9 +399,56 @@ impl<'a> ValidationVisitor<'a> {
 
     /// Resolve a name visible in the current module (own items, uses, re-exports, globs).
     fn lookup_in_scope(&self, name: &str) -> Option<&ItemInfo> {
+        if let LocalLookup::Item(item) = self.lookup_local(name) {
+            return Some(item);
+        }
         self.symbols
             .resolve_item(&self.module_path, name, &self.module_path, self.crate_name)
             .accessible()
+    }
+
+    /// Names brought in by `use` items of the enclosing blocks, innermost first.
+    fn lookup_local(&self, name: &str) -> LocalLookup<'_> {
+        let symbols = self.symbols;
+        let mut imported = false;
+        for scope in self.local_scopes.iter().rev() {
+            for import in scope.imports.iter().filter(|i| i.name == name) {
+                imported = true;
+                let item = symbols
+                    .resolve_use_path(&self.module_path, &import.path, self.crate_name)
+                    .and_then(|abs| {
+                        let (item_name, module_part) = abs.split_last()?;
+                        let module =
+                            symbols.resolve_module(module_part, &self.module_path, self.crate_name)?;
+                        symbols
+                            .resolve_item(&module.path, item_name, &self.module_path, self.crate_name)
+                            .accessible()
+                    });
+                if let Some(item) = item {
+                    return LocalLookup::Item(item);
+                }
+            }
+            for prefix in &scope.globs {
+                let target = symbols
+                    .resolve_use_path(&self.module_path, prefix, self.crate_name)
+                    .and_then(|abs| {
+                        symbols.resolve_module(&abs, &self.module_path, self.crate_name)
+                    });
+                match target {
+                    Some(module) => {
+                        if let Some(item) = symbols
+                            .resolve_item(&module.path, name, &self.module_path, self.crate_name)
+                            .accessible()
+                        {
+                            return LocalLookup::Item(item);
+                        }
+                    }
+                    // External or non-module target: any name may come from it
+                    None => imported = true,
+                }
+            }
+        }
+        if imported { LocalLookup::Imported } else { LocalLookup::None }
     }
 
     /// Find an item by name across the entire crate (for suggestions).
@@ -612,7 +661,20 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     }
 
     fn visit_item_use(&mut self, _node: &'ast syn::ItemUse) {
-        // Already handled in validate_use_statements
+        // Module-level uses are handled in validate_use_statements, block uses in visit_block
+    }
+
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        let mut scope = LocalScope::default();
+        for stmt in &node.stmts {
+            if let syn::Stmt::Item(syn::Item::Use(u)) = stmt {
+                self.validator.validate_use_tree(&u.tree, &mut Vec::new(), u);
+                collect_local_imports(&u.tree, &mut Vec::new(), &mut scope);
+            }
+        }
+        self.validator.local_scopes.push(scope);
+        syn::visit::visit_block(self, node);
+        self.validator.local_scopes.pop();
     }
 
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
@@ -631,9 +693,8 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     /// Generates a Fix (insert use statement) when there's a single unambiguous candidate,
     /// or uses smart import resolution when there are multiple candidates.
     fn check_type_in_scope(&mut self, name: &str, span: proc_macro2::Span) {
-        let in_scope = {
-            self.validator.lookup_in_scope(name).is_some()
-        };
+        let in_scope = !matches!(self.validator.lookup_local(name), LocalLookup::None)
+            || self.validator.lookup_in_scope(name).is_some();
 
         if in_scope {
             return;
@@ -680,6 +741,59 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
             hint: Some(hint),
             fix,
         });
+    }
+}
+
+#[derive(Default)]
+struct LocalScope {
+    imports: Vec<LocalImport>,
+    globs: Vec<Vec<String>>,
+}
+
+struct LocalImport {
+    name: String,
+    path: Vec<String>,
+}
+
+enum LocalLookup<'a> {
+    Item(&'a ItemInfo),
+    Imported,
+    None,
+}
+
+fn collect_local_imports(tree: &syn::UseTree, prefix: &mut Vec<String>, scope: &mut LocalScope) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            collect_local_imports(&p.tree, prefix, scope);
+            prefix.pop();
+        }
+        syn::UseTree::Name(n) => {
+            let ident = n.ident.to_string();
+            if ident == "self" {
+                if let Some(last) = prefix.last() {
+                    scope.imports.push(LocalImport { name: last.clone(), path: prefix.clone() });
+                }
+            } else {
+                let mut path = prefix.clone();
+                path.push(ident.clone());
+                scope.imports.push(LocalImport { name: ident, path });
+            }
+        }
+        syn::UseTree::Rename(r) => {
+            let alias = r.rename.to_string();
+            if alias != "_" {
+                let mut path = prefix.clone();
+                path.push(r.ident.to_string());
+                scope.imports.push(LocalImport { name: alias, path });
+            }
+        }
+        syn::UseTree::Glob(_) => scope.globs.push(prefix.clone()),
+        syn::UseTree::Group(g) => {
+            for tree in &g.items {
+                collect_local_imports(tree, prefix, scope);
+            }
+        }
     }
 }
 
