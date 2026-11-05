@@ -201,6 +201,22 @@ impl<'a> ValidationVisitor<'a> {
         let symbols = self.symbols;
         let resolved = match symbols.resolve_use_path(self.module_path, path, self.crate_name) {
             Some(r) => r,
+            None if path[0] == "super" => {
+                self.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    file: self.file_path.to_path_buf(),
+                    line: span.start().line,
+                    column: span.start().column + 1,
+                    message: format!(
+                        "failed to resolve `{}`: there are too many leading `super` keywords",
+                        path.join("::")
+                    ),
+                    error_code: Some("E0433".to_string()),
+                    hint: None,
+                    fix: None,
+                });
+                return;
+            }
             None => return, // Can't resolve — likely external, skip
         };
 
