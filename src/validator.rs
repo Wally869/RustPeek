@@ -220,12 +220,7 @@ impl<'a> ValidationVisitor<'a> {
                 self.check_use_path(&full_path, r.ident.span(), &use_vis);
             }
             syn::UseTree::Glob(_) => {
-                let local_bare = !prefix.is_empty()
-                    && self
-                        .symbols
-                        .resolve_use_path(&self.module_path, prefix, self.crate_name)
-                        .is_some();
-                if is_crate_path(prefix, self.crate_name) || local_bare {
+                if self.is_local_path(prefix) {
                     let outcome = self.glob_outcome(prefix);
                     if outcome == GlobOutcome::Private {
                         let span = use_item.use_token.span;
@@ -337,9 +332,20 @@ impl<'a> ValidationVisitor<'a> {
         });
     }
 
+    /// A path is local when it starts with `crate`/`self`/`super`/the crate name,
+    /// or with a child module of the current module.
+    fn is_local_path(&self, path: &[String]) -> bool {
+        is_crate_path(path, self.crate_name)
+            || (!path.is_empty()
+                && self
+                    .symbols
+                    .resolve_use_path(&self.module_path, path, self.crate_name)
+                    .is_some())
+    }
+
     /// Check if a `use` path resolves within the crate.
     fn check_use_path(&mut self, path: &[String], span: proc_macro2::Span, use_vis: &Vis) {
-        if !is_crate_path(path, self.crate_name) {
+        if !self.is_local_path(path) {
             return;
         }
 
@@ -772,7 +778,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     /// E0433 for an expression or type path whose module part names nothing in the crate.
     fn check_path_modules(&mut self, path: &syn::Path) {
         let names: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        if names.len() < 2 || !is_crate_path(&names, self.validator.crate_name) {
+        if names.len() < 2 || !self.validator.is_local_path(&names) {
             return;
         }
         let symbols = self.validator.symbols;
