@@ -39,6 +39,8 @@ mod nested_path;
 mod lowercase_names;
 mod cfg_alternatives;
 mod mod_fn_same_name;
+#[allow(unused_imports)]
+use mod_fn_same_name::coalesce;
 #[path = "path_mapped/real_name.rs"]
 mod renamed;
 use crate::crate_vis::C;

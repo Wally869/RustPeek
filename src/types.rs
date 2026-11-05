@@ -477,7 +477,22 @@ impl SymbolTable {
                 .chain(same_name.filter(|i| i.is_cfg_alternative_of(first)))
                 .find(|i| i.vis.accessible_from(accessor))
                 .unwrap_or(first);
-            return Resolved::of(chosen, chosen.vis.accessible_from(accessor));
+            let accessible = chosen.vis.accessible_from(accessor);
+            if !accessible && namespace == Namespace::Any {
+                // A `use` imports every namespace: a private item in one namespace does not
+                // hide an accessible name of the other.
+                for other in [Namespace::Type, Namespace::Value] {
+                    if other.admits(chosen) {
+                        continue;
+                    }
+                    let found =
+                        self.search_module(module, name, other, accessor, crate_name, in_progress);
+                    if matches!(found, Resolved::Accessible(_)) {
+                        return found;
+                    }
+                }
+            }
+            return Resolved::of(chosen, accessible);
         }
 
         let mut inaccessible = None;
