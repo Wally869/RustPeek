@@ -81,7 +81,13 @@ impl<'a> ValidationVisitor<'a> {
             match target {
                 Some(module) => {
                     !matches!(
-                        symbols.resolve_item(&module.path, name, &self.module_path, self.crate_name),
+                        symbols.resolve_item(
+                            &module.path,
+                            name,
+                            Namespace::Any,
+                            &self.module_path,
+                            self.crate_name
+                        ),
                         Resolved::NotFound
                     ) || self.module_may_hide(&module.path, name, &mut Vec::new())
                 }
@@ -93,6 +99,7 @@ impl<'a> ValidationVisitor<'a> {
                             symbols.resolve_item(
                                 &self.module_path,
                                 first,
+                                Namespace::Any,
                                 &self.module_path,
                                 self.crate_name
                             ),
@@ -114,7 +121,13 @@ impl<'a> ValidationVisitor<'a> {
             }
         }
         if !matches!(
-            symbols.resolve_item(&self.module_path, name, &self.module_path, self.crate_name),
+            symbols.resolve_item(
+                &self.module_path,
+                name,
+                Namespace::Any,
+                &self.module_path,
+                self.crate_name
+            ),
             Resolved::NotFound
         ) {
             return true;
@@ -130,12 +143,12 @@ impl<'a> ValidationVisitor<'a> {
     }
 
     /// Resolve a name visible in the current module (own items, uses, re-exports, globs).
-    pub(super) fn lookup_in_scope(&self, name: &str) -> Option<&ItemInfo> {
-        if let LocalLookup::Item(item) = self.lookup_local(name) {
+    pub(super) fn lookup_in_scope(&self, name: &str, namespace: Namespace) -> Option<&ItemInfo> {
+        if let LocalLookup::Item(item) = self.lookup_local(name, namespace) {
             return Some(item);
         }
         self.symbols
-            .resolve_item(&self.module_path, name, &self.module_path, self.crate_name)
+            .resolve_item(&self.module_path, name, namespace, &self.module_path, self.crate_name)
             .accessible()
     }
 
@@ -162,9 +175,9 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
     /// or uses smart import resolution when there are multiple candidates.
     pub(super) fn check_name_in_scope(&mut self, name: &str, span: proc_macro2::Span) {
         let in_scope = PRELUDE_NAMES.contains(&name)
-            || !matches!(self.validator.lookup_local(name), LocalLookup::None)
+            || !matches!(self.validator.lookup_local(name, Namespace::Any), LocalLookup::None)
             || self.validator.module_uses().any(|u| !u.is_glob && u.alias == name)
-            || self.validator.lookup_in_scope(name).is_some()
+            || self.validator.lookup_in_scope(name, Namespace::Any).is_some()
             // An item-level macro invocation in this module may define the name.
             || self.validator.symbols.has_macro_call(&self.validator.module_path);
 

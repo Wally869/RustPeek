@@ -146,34 +146,38 @@ impl<'a> ValidationVisitor<'a> {
     /// Resolve a path written in the current module through its own segments: a single
     /// name is looked up in scope; a longer path must name a crate module then an item in
     /// it. `None` for a path through a type (`Type::f`), an external path or a missing item.
-    pub(super) fn lookup_path(&self, path: &[String]) -> Option<&ItemInfo> {
+    pub(super) fn lookup_path(&self, path: &[String], namespace: Namespace) -> Option<&ItemInfo> {
         match path {
-            [name] => self.lookup_in_scope(name),
-            _ => self.lookup_crate_path(path),
+            [name] => self.lookup_in_scope(name, namespace),
+            _ => self.lookup_crate_path(path, namespace),
         }
     }
 
     /// The accessible item a `use`-style path names, when every segment before the last
     /// is a crate module.
-    pub(super) fn lookup_crate_path(&self, path: &[String]) -> Option<&ItemInfo> {
+    pub(super) fn lookup_crate_path(
+        &self,
+        path: &[String],
+        namespace: Namespace,
+    ) -> Option<&ItemInfo> {
         let symbols = self.symbols;
         let abs = symbols.resolve_use_path(&self.module_path, path, self.crate_name)?;
         let (item_name, module_part) = abs.split_last()?;
         let module = symbols.walk_path(module_part, &self.module_path, self.crate_name).module()?;
         symbols
-            .resolve_item(&module.path, item_name, &self.module_path, self.crate_name)
+            .resolve_item(&module.path, item_name, namespace, &self.module_path, self.crate_name)
             .accessible()
     }
 
     /// Names brought in by `use` items of the enclosing blocks, innermost first.
-    pub(super) fn lookup_local(&self, name: &str) -> LocalLookup<'_> {
+    pub(super) fn lookup_local(&self, name: &str, namespace: Namespace) -> LocalLookup<'_> {
         let mut imported = false;
         let symbols = self.symbols;
         for scope in self.local_scopes.iter().rev() {
             imported |= scope.binds(name);
             for import in scope.imports.iter().filter(|i| i.name == name) {
                 imported = true;
-                if let Some(item) = self.lookup_crate_path(&import.path) {
+                if let Some(item) = self.lookup_crate_path(&import.path, namespace) {
                     return LocalLookup::Item(item);
                 }
             }
@@ -186,7 +190,13 @@ impl<'a> ValidationVisitor<'a> {
                 match target {
                     Some(module) => {
                         if let Some(item) = symbols
-                            .resolve_item(&module.path, name, &self.module_path, self.crate_name)
+                            .resolve_item(
+                                &module.path,
+                                name,
+                                namespace,
+                                &self.module_path,
+                                self.crate_name,
+                            )
                             .accessible()
                         {
                             return LocalLookup::Item(item);
@@ -223,7 +233,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         v.scope_globs().into_iter().find_map(|prefix| {
             let abs = symbols.resolve_use_path(&v.module_path, prefix, v.crate_name)?;
             let target = symbols.walk_path(&abs, &v.module_path, v.crate_name).module()?;
-            match symbols.resolve_item(&target.path, name, &v.module_path, v.crate_name) {
+            match symbols.resolve_item(&target.path, name, Namespace::Any, &v.module_path, v.crate_name) {
                 Resolved::Inaccessible(_) => Some(target.path.display()),
                 _ => None,
             }

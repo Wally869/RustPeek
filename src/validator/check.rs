@@ -62,6 +62,7 @@ impl<'a> ValidationVisitor<'a> {
             let (found, links) = symbols.resolve_item_links(
                 &module_path,
                 item_name,
+                Namespace::Any,
                 &self.module_path,
                 self.crate_name,
             );
@@ -157,6 +158,7 @@ impl<'a> ValidationVisitor<'a> {
         let (found, links) = symbols.resolve_item_links(
             &parent.path,
             enum_name,
+            Namespace::Any,
             &self.module_path,
             self.crate_name,
         );
@@ -225,7 +227,7 @@ impl<'a> ValidationVisitor<'a> {
 
 impl<'a, 'b> RefVisitor<'a, 'b> {
     /// E0433 for an expression or type path whose module part names nothing in the crate.
-    pub(super) fn check_path_modules(&mut self, path: &syn::Path) {
+    pub(super) fn check_path_modules(&mut self, path: &syn::Path, namespace: Namespace) {
         let names: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
         if names.len() < 2 {
             return;
@@ -294,6 +296,7 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         let found = symbols.resolve_item(
             &walk.reached,
             &abs[last],
+            namespace,
             &self.validator.module_path,
             self.validator.crate_name,
         );

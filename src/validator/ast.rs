@@ -3,14 +3,14 @@ use super::*;
 impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
         if node.qself.is_none() {
-            self.check_path_modules(&node.path);
+            self.check_path_modules(&node.path, Namespace::Type);
         }
         let type_name = path_last_segment(&node.path).filter(|_| node.qself.is_none());
         let names: Vec<String> = node.path.segments.iter().map(|s| s.ident.to_string()).collect();
         if let Some(type_name) = type_name {
             // Through its own path: `Enum::Variant { .. }` names no struct.
             let struct_fields: Option<(Vec<String>, Vec<String>)> = {
-                self.validator.lookup_path(&names)
+                self.validator.lookup_path(&names, Namespace::Type)
                     .filter(|i| i.kind == ItemKind::Struct)
                     .map(|item| {
                         let all = item.fields.iter().map(|f| f.name.clone()).collect();
@@ -102,7 +102,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
             let names: Vec<String> =
                 path.path.segments.iter().map(|s| s.ident.to_string()).collect();
             if let Some(fn_name) = path_last_segment(&path.path).filter(|_| path.qself.is_none()) {
-                if let Some(item) = self.validator.lookup_path(&names)
+                if let Some(item) = self.validator.lookup_path(&names, Namespace::Value)
                     .filter(|i| i.kind == ItemKind::Function)
                 {
                     if let Some(expected) = item.param_count {
@@ -133,7 +133,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
 
     fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
         if node.qself.is_none() {
-            self.check_path_modules(&node.path);
+            self.check_path_modules(&node.path, Namespace::Value);
         }
 
         // `Type::name` on a local enum or struct: reported only when no impl, derive,
@@ -143,7 +143,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
             let member_name = node.path.segments[1].ident.to_string();
 
             let check_result: Option<(bool, String, Vec<String>)> = {
-                self.validator.lookup_in_scope(&type_name)
+                self.validator.lookup_in_scope(&type_name, Namespace::Type)
                     .filter(|i| matches!(i.kind, ItemKind::Enum | ItemKind::Struct))
                     .filter(|i| !i.variants.iter().any(|v| v.name == member_name))
                     .map(|item| {
@@ -196,7 +196,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
 
     fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
         if node.qself.is_none() {
-            self.check_path_modules(&node.path);
+            self.check_path_modules(&node.path, Namespace::Type);
         }
 
         if node.qself.is_none() && node.path.segments.len() == 1 {

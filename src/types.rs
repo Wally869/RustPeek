@@ -92,7 +92,7 @@ pub fn resolve_vis_path(path: &syn::Path, defining_module: &ModulePath) -> Optio
 /// `use` link on the chain that resolved the name, nearest the item first.
 #[derive(Default)]
 struct Walk {
-    active: HashSet<(ModulePath, String)>,
+    active: HashSet<(ModulePath, String, Namespace)>,
     links: Vec<Vis>,
 }
 
@@ -181,6 +181,35 @@ pub enum ItemKind {
     Static,
     Macro,
     Module,
+}
+
+/// The namespace a name is looked up in. `Any` is for a `use`, which imports every namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Namespace {
+    Type,
+    Value,
+    Any,
+}
+
+impl Namespace {
+    fn admits(self, item: &ItemInfo) -> bool {
+        match self {
+            Namespace::Any => true,
+            Namespace::Type => matches!(
+                item.kind,
+                ItemKind::Struct
+                    | ItemKind::Enum
+                    | ItemKind::Trait
+                    | ItemKind::TypeAlias
+                    | ItemKind::Module
+            ),
+            Namespace::Value => match item.kind {
+                ItemKind::Function | ItemKind::Const | ItemKind::Static => true,
+                ItemKind::Struct => item.has_value_ctor,
+                _ => false,
+            },
+        }
+    }
 }
 
 /// A field in a struct
@@ -384,10 +413,11 @@ impl SymbolTable {
         &self,
         module: &ModulePath,
         name: &str,
+        namespace: Namespace,
         accessor: &ModulePath,
         crate_name: Option<&str>,
     ) -> Resolved<'_> {
-        self.resolve_item_in(module, name, accessor, crate_name, &mut Walk::default())
+        self.resolve_item_in(module, name, namespace, accessor, crate_name, &mut Walk::default())
     }
 
     /// Like `resolve_item`, also returning the visibility of every `use` link the name
@@ -396,11 +426,12 @@ impl SymbolTable {
         &self,
         module: &ModulePath,
         name: &str,
+        namespace: Namespace,
         accessor: &ModulePath,
         crate_name: Option<&str>,
     ) -> (Resolved<'_>, Vec<Vis>) {
         let mut walk = Walk::default();
-        let found = self.resolve_item_in(module, name, accessor, crate_name, &mut walk);
+        let found = self.resolve_item_in(module, name, namespace, accessor, crate_name, &mut walk);
         (found, walk.links)
     }
 
@@ -408,15 +439,16 @@ impl SymbolTable {
         &self,
         module: &ModulePath,
         name: &str,
+        namespace: Namespace,
         accessor: &ModulePath,
         crate_name: Option<&str>,
         in_progress: &mut Walk,
     ) -> Resolved<'_> {
-        let key = (module.clone(), name.to_string());
+        let key = (module.clone(), name.to_string(), namespace);
         if !in_progress.active.insert(key.clone()) {
             return Resolved::NotFound;
         }
-        let found = self.search_module(module, name, accessor, crate_name, in_progress);
+        let found = self.search_module(module, name, namespace, accessor, crate_name, in_progress);
         in_progress.active.remove(&key);
         found
     }
@@ -425,6 +457,7 @@ impl SymbolTable {
         &self,
         module: &ModulePath,
         name: &str,
+        namespace: Namespace,
         accessor: &ModulePath,
         crate_name: Option<&str>,
         in_progress: &mut Walk,
@@ -435,7 +468,9 @@ impl SymbolTable {
         else {
             return Resolved::NotFound;
         };
-        let mut same_name = info.items.iter().filter(|i| i.name == name && i.module == *module);
+        let mut same_name = info.items.iter().filter(|i| {
+            i.name == name && i.module == *module && namespace.admits(i)
+        });
         if let Some(first) = same_name.next() {
             // cfg alternatives: the name is usable when any alternative is accessible.
             let chosen = std::iter::once(first)
@@ -459,7 +494,7 @@ impl SymbolTable {
             };
             let reachable = use_info.vis.accessible_from(accessor);
             let mark = in_progress.links.len();
-            match self.resolve_abs_item(&abs, module, accessor, crate_name, in_progress) {
+            match self.resolve_abs_item(&abs, namespace, module, accessor, crate_name, in_progress) {
                 Resolved::Accessible(item) if reachable => {
                     in_progress.links.push(use_info.vis.clone());
                     return Resolved::Accessible(item);
@@ -501,11 +536,19 @@ impl SymbolTable {
             // exists behind the glob, so an explicit path to it is private, not missing.
             let mark = in_progress.links.len();
             let seen_by_holder =
-                self.resolve_item_in(&target.path, name, module, crate_name, in_progress);
+                self.resolve_item_in(&target.path, name, namespace, module, crate_name, in_progress);
             in_progress.links.truncate(mark);
             match seen_by_holder {
                 Resolved::Accessible(_) => {
-                    match self.resolve_item_in(&target.path, name, accessor, crate_name, in_progress) {
+                    let seen_by_accessor = self.resolve_item_in(
+                        &target.path,
+                        name,
+                        namespace,
+                        accessor,
+                        crate_name,
+                        in_progress,
+                    );
+                    match seen_by_accessor {
                         Resolved::Accessible(item)
                             if target.accessible
                                 && use_info.vis.accessible_from(accessor) =>
@@ -580,6 +623,7 @@ impl SymbolTable {
     fn resolve_abs_item(
         &self,
         abs: &[String],
+        namespace: Namespace,
         path_accessor: &ModulePath,
         accessor: &ModulePath,
         crate_name: Option<&str>,
@@ -599,7 +643,7 @@ impl SymbolTable {
         let Some(module) = module_walk.module() else {
             return Resolved::NotFound;
         };
-        match self.resolve_item_in(&module.path, name, accessor, crate_name, in_progress) {
+        match self.resolve_item_in(&module.path, name, namespace, accessor, crate_name, in_progress) {
             Resolved::Accessible(item) if !module.accessible => Resolved::Inaccessible(item),
             found => found,
         }
@@ -636,8 +680,14 @@ impl SymbolTable {
         }
         for (index, segment) in abs.iter().enumerate().skip(1) {
             let mark = in_progress.links.len();
-            let found =
-                self.resolve_item_in(&walk.reached, segment, accessor, crate_name, in_progress);
+            let found = self.resolve_item_in(
+                &walk.reached,
+                segment,
+                Namespace::Type,
+                accessor,
+                crate_name,
+                in_progress,
+            );
             in_progress.links.truncate(mark);
             if matches!(found, Resolved::External) {
                 walk.stop = Some(PathStop::External { index });
@@ -651,15 +701,10 @@ impl SymbolTable {
                 walk.stop = Some(PathStop::Missing { index });
                 return walk;
             };
-            // A path segment is in the type namespace: a module of the same name as a fn
-            // or const of the module is the one meant.
-            let Some(item) = (item.kind == ItemKind::Module)
-                .then_some(item)
-                .or_else(|| self.own_module_item(&walk.reached, segment))
-            else {
+            if item.kind != ItemKind::Module {
                 walk.stop = Some(PathStop::NotModule { index });
                 return walk;
-            };
+            }
             walk.reached = item.module.child(&item.name);
         }
         walk
@@ -671,14 +716,6 @@ impl SymbolTable {
             .get(module)
             .or_else(|| self.enclosing_file_module(module))
             .is_some_and(|info| info.macro_modules.contains(module))
-    }
-
-    /// The module item `name` declared directly in `module`, if any.
-    fn own_module_item(&self, module: &ModulePath, name: &str) -> Option<&ItemInfo> {
-        let info = self.modules.get(module).or_else(|| self.enclosing_file_module(module))?;
-        info.items
-            .iter()
-            .find(|i| i.kind == ItemKind::Module && i.name == name && i.module == *module)
     }
 
     /// Whether `Type::name` may name an associated item of the type `type_name` (matched by

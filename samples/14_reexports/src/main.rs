@@ -38,6 +38,7 @@ mod shadowed_names;
 mod nested_path;
 mod lowercase_names;
 mod cfg_alternatives;
+mod mod_fn_same_name;
 #[path = "path_mapped/real_name.rs"]
 mod renamed;
 use crate::crate_vis::C;
@@ -47,4 +48,7 @@ use crate::inline_mods::empty;
 use crate::inline_mods::empty::*;
 use crate::cyc::Leaf;
 use crate::cyc::Top;
-fn main() { let _ = (Leaf, Top); }
+fn main() {
+    let _ = (Leaf, Top);
+    let _ = mod_fn_same_name::coalesce(1, 2);
+}
