@@ -41,6 +41,10 @@ mod cfg_alternatives;
 mod mod_fn_same_name;
 #[allow(unused_imports)]
 use mod_fn_same_name::coalesce;
+mod cfg_attr_path;
+mod macro_export_root;
+// The crate's own name as a path root, as syn does.
+extern crate self as sample_reexports;
 #[path = "path_mapped/real_name.rs"]
 mod renamed;
 use crate::crate_vis::C;
