@@ -21,3 +21,14 @@ fn in_body() {
     use serde::Deserialize;
     use Shade::Light;
 }
+
+// Round 9: a prelude enum as the root of a `use` (itertools multi_product.rs).
+mod prelude_roots {
+    use Option::{self as Maybe, None as Nothing, Some as Just};
+    use Result::{Err as Break, Ok as Continue};
+
+    pub fn f() -> Maybe<u8> {
+        let _: Result<u8, u8> = if true { Continue(1) } else { Break(2) };
+        if false { Nothing } else { Just(1) }
+    }
+}

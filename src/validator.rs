@@ -382,7 +382,9 @@ impl<'a> ValidationVisitor<'a> {
         let Some(first) = prefix.first() else {
             return false;
         };
+        // A prelude name is a valid path root too (`use Option::{self as X, None}`).
         !(self.is_known_crate(first)
+            || PRELUDE_NAMES.contains(&first.as_str())
             || self.symbols.has_macro_call(&self.module_path)
             || self.name_in_scope(first, prefix))
     }
@@ -1187,7 +1189,6 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
             let first = names[0].as_str();
             let defined_elsewhere = !self.validator.find_anywhere(first).is_empty();
             if !matches!(first, "crate" | "self" | "super")
-                && !PRELUDE_NAMES.contains(&first)
                 && !defined_elsewhere
             {
                 self.validator.report_unknown_crate(&names, path.segments[0].ident.span());
