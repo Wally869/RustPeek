@@ -331,6 +331,7 @@ impl<'a> ValidationVisitor<'a> {
         item: &ItemInfo,
         links: &[Vis],
         name: &str,
+        binds_value: bool,
         use_vis: &Vis,
         span: proc_macro2::Span,
     ) {
@@ -351,12 +352,7 @@ impl<'a> ValidationVisitor<'a> {
         let Some(narrowing_scope) = narrowing_scope else {
             return;
         };
-        let binds_value = match item.kind {
-        ItemKind::Function | ItemKind::Const | ItemKind::Static => true,
-        ItemKind::Struct => item.has_value_ctor,
-        _ => false,
-    };
-    let code = if binds_value { "E0364" } else { "E0365" };
+        let code = if binds_value { "E0364" } else { "E0365" };
         let message = reexport_message(name, narrowing_scope);
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
@@ -439,6 +435,13 @@ impl<'a> ValidationVisitor<'a> {
 
     /// Check if a `use` path resolves within the crate.
     fn check_use_path(&mut self, path: &[String], span: proc_macro2::Span, use_vis: &Vis) {
+        if path.len() == 2 && !self.is_local_path(path) {
+            // Bare `Enum::Variant` of an enum defined in the current module
+            let mut absolute = self.module_path.0.clone();
+            absolute.extend(path.iter().cloned());
+            self.check_variant_use(path, &absolute, span, use_vis);
+            return;
+        }
         if !self.is_local_path(path) {
             return;
         }
@@ -529,8 +532,14 @@ impl<'a> ValidationVisitor<'a> {
                     fix,
                 });
             } else if let Resolved::Accessible(item) = found {
-                self.check_reexport_visibility(item, &links, item_name, use_vis, span);
+                let binds_value = match item.kind {
+                    ItemKind::Function | ItemKind::Const | ItemKind::Static => true,
+                    ItemKind::Struct => item.has_value_ctor,
+                    _ => false,
+                };
+                self.check_reexport_visibility(item, &links, item_name, binds_value, use_vis, span);
             }
+        } else if self.check_variant_use(path, &resolved, span, use_vis) {
         } else {
             self.diagnostics.push(Diagnostic {
                 severity: Severity::Error,
@@ -543,6 +552,74 @@ impl<'a> ValidationVisitor<'a> {
                 fix: None,
             });
         }
+    }
+
+    /// Check a `use` whose path ends in `Enum::Variant`. Returns false when the parent
+    /// of the last segment is not an enum of the crate, leaving the path to the caller.
+    fn check_variant_use(
+        &mut self,
+        path: &[String],
+        resolved: &[String],
+        span: proc_macro2::Span,
+        use_vis: &Vis,
+    ) -> bool {
+        let symbols = self.symbols;
+        if resolved.len() < 3 {
+            return false;
+        }
+        let variant_name = &resolved[resolved.len() - 1];
+        let enum_name = &resolved[resolved.len() - 2];
+        let parent_segments = &resolved[..resolved.len() - 2];
+        let Some(parent) = symbols
+            .resolve_module(parent_segments, &self.module_path, self.crate_name)
+            .filter(|m| symbols.module_exists(&m.path))
+        else {
+            return false;
+        };
+        let (found, links) = symbols.resolve_item_links(
+            &parent.path,
+            enum_name,
+            &self.module_path,
+            self.crate_name,
+        );
+        let (message, code) = match found {
+            Resolved::NotFound => return false,
+            Resolved::Inaccessible(item) if item.kind == ItemKind::Enum => {
+                (format!("enum `{}` is private", enum_name), "E0603")
+            }
+            Resolved::Inaccessible(_) => return false,
+            Resolved::Accessible(item) => {
+                if item.kind != ItemKind::Enum {
+                    return false;
+                }
+                if !parent.accessible {
+                    (format!("enum `{}` is private", enum_name), "E0603")
+                } else if let Some(variant) = item.variants.iter().find(|v| &v.name == variant_name) {
+                    self.check_reexport_visibility(
+                        item,
+                        &links,
+                        variant_name,
+                        !variant.is_named_fields,
+                        use_vis,
+                        span,
+                    );
+                    return true;
+                } else {
+                    (format!("unresolved import `{}`", path.join("::")), "E0432")
+                }
+            }
+        };
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            file: self.file_path.to_path_buf(),
+            line: span.start().line,
+            column: span.start().column + 1,
+            message,
+            error_code: Some(code.to_string()),
+            hint: None,
+            fix: None,
+        });
+        true
     }
 
     /// Walk the AST checking type references, field access, function calls, etc.
