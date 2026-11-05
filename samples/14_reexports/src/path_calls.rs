@@ -67,6 +67,61 @@ impl From<u8> for Op {
     }
 }
 
+pub trait Describe {
+    fn describe_one() -> u8;
+    fn describe_two() -> u8 {
+        2
+    }
+}
+
+pub trait Everywhere {
+    fn everywhere() -> u8 {
+        0
+    }
+}
+
+impl<T> Everywhere for T {}
+
+#[derive(Default)]
+pub struct Plain {
+    pub n: u8,
+}
+
+pub struct Handmade;
+
+impl Default for Handmade {
+    fn default() -> Handmade {
+        Handmade
+    }
+}
+
+pub struct Tagged;
+
+impl Tagged {
+    pub const LIMIT: u8 = 3;
+
+    pub fn build() -> Tagged {
+        Tagged
+    }
+}
+
+impl Describe for Tagged {
+    fn describe_one() -> u8 {
+        1
+    }
+}
+
+pub fn assoc_items() {
+    let _ = Tagged::build();
+    let _ = Tagged::LIMIT;
+    let _ = Tagged::describe_one();
+    let _ = Tagged::describe_two();
+    let _ = Tagged::everywhere();
+    let _ = Plain::default();
+    let _ = Handmade::default();
+    let _ = Handmade::from(Handmade);
+}
+
 pub type OpAlias = Op;
 
 pub fn assoc() -> Op {

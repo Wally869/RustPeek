@@ -240,6 +240,16 @@ pub struct ImplInfo {
     pub type_name: String,
     /// Method names and their param counts (excluding self)
     pub methods: Vec<MethodInfo>,
+    /// Associated const and type names
+    pub assoc_names: Vec<String>,
+    /// Last segment of the implemented trait (the derive name for a derive); None for an inherent impl
+    pub trait_name: Option<String>,
+    /// A `#[derive(..)]` entry of the type, not a written impl
+    pub is_derive: bool,
+    /// A trait impl whose self type is a bare generic parameter (`impl<T> Tr for T`)
+    pub is_blanket: bool,
+    /// The impl body holds a macro call, which may define any member
+    pub has_macro: bool,
 }
 
 /// A method in an impl block
@@ -622,20 +632,70 @@ impl SymbolTable {
             .find(|i| i.kind == ItemKind::Module && i.name == name && i.module == *module)
     }
 
-    /// Find impl methods for a type name
-    pub fn find_methods(&self, type_name: &str) -> Vec<(&ModulePath, &MethodInfo)> {
-        let mut results = Vec::new();
-        for (path, module_info) in &self.modules {
-            for impl_info in &module_info.impls {
-                if impl_info.type_name == type_name {
-                    for method in &impl_info.methods {
-                        results.push((path, method));
-                    }
+    /// Whether `Type::name` may name an associated item of the type `type_name` (matched by
+    /// name): provided by an impl, a derive or a blanket impl, or not decidable from the index.
+    pub fn may_have_associated_item(&self, type_name: &str, name: &str) -> bool {
+        if self.modules.values().any(|m| !m.macro_modules.is_empty()) {
+            return true;
+        }
+        const STD_BLANKET: [&str; 10] = [
+            "from", "into", "try_from", "try_into", "borrow", "borrow_mut", "type_id",
+            "to_owned", "clone_into", "to_string",
+        ];
+        if STD_BLANKET.contains(&name) {
+            return true;
+        }
+        self.modules
+            .values()
+            .flat_map(|m| m.impls.iter())
+            .filter(|i| i.is_blanket || i.type_name == type_name)
+            .any(|i| {
+                if i.has_macro {
+                    return true;
                 }
+                match &i.trait_name {
+                    None => {
+                        i.methods.iter().any(|m| m.name == name)
+                            || i.assoc_names.iter().any(|n| n == name)
+                    }
+                    Some(trait_name) if i.is_derive => derive_provides(trait_name, name),
+                    Some(trait_name) => self.local_trait_may_provide(trait_name, name),
+                }
+            })
+    }
+
+    fn local_trait_may_provide(&self, trait_name: &str, name: &str) -> bool {
+        let mut found = false;
+        for item in self
+            .modules
+            .values()
+            .flat_map(|m| m.items.iter())
+            .filter(|i| i.kind == ItemKind::Trait && i.name == trait_name)
+        {
+            found = true;
+            if item.has_macro_items || item.fields.iter().any(|f| f.name == name) {
+                return true;
             }
         }
-        results
+        !found
     }
+}
+
+/// Whether the std derive `derive` provides the associated item `name`; an unknown derive
+/// may provide anything.
+fn derive_provides(derive: &str, name: &str) -> bool {
+    let names: &[&str] = match derive {
+        "Default" => &["default"],
+        "Clone" => &["clone", "clone_from"],
+        "PartialEq" => &["eq", "ne"],
+        "PartialOrd" => &["partial_cmp", "lt", "le", "gt", "ge"],
+        "Ord" => &["cmp", "max", "min", "clamp"],
+        "Hash" => &["hash", "hash_slice"],
+        "Debug" => &["fmt"],
+        "Copy" | "Eq" => &[],
+        _ => return true,
+    };
+    names.contains(&name)
 }
 
 /// Severity of a diagnostic

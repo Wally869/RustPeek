@@ -984,52 +984,47 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
             self.check_path_modules(&node.path);
         }
 
-        // Check enum variant paths like `Foo::Bar`. Only a variant-like (UpperCamelCase) name
-        // is checked: a lowercase or all-caps name is an associated fn or const, which a
-        // trait impl, a derive or a blanket impl outside the index may provide.
-        if node.path.segments.len() == 2 && is_variant_like(&node.path.segments[1].ident.to_string()) {
+        // `Type::name` on a local enum or struct: reported only when no impl, derive,
+        // blanket impl or macro could provide `name`.
+        if node.path.segments.len() == 2 {
             let type_name = node.path.segments[0].ident.to_string();
-            let variant_name = node.path.segments[1].ident.to_string();
+            let member_name = node.path.segments[1].ident.to_string();
 
-            let check_result: Option<(Vec<String>, Vec<String>)> = {
+            let check_result: Option<(bool, Vec<String>)> = {
                 self.validator.lookup_in_scope(&type_name)
-                    .filter(|i| i.kind == ItemKind::Enum)
+                    .filter(|i| matches!(i.kind, ItemKind::Enum | ItemKind::Struct))
+                    .filter(|i| !i.variants.iter().any(|v| v.name == member_name))
                     .map(|item| {
-                        let variants: Vec<String> = item.variants.iter().map(|v| v.name.clone()).collect();
                         let similar: Vec<String> = item.variants.iter()
-                            .filter(|v| is_similar(&v.name, &variant_name))
+                            .filter(|v| is_similar(&v.name, &member_name))
                             .map(|v| v.name.clone())
                             .collect();
-                        (variants, similar)
+                        (item.kind == ItemKind::Enum, similar)
                     })
             };
 
-            if let Some((variants, similar)) = check_result {
-                if !variants.contains(&variant_name) {
-                    let has_method = self.validator.symbols
-                        .find_methods(&type_name)
-                        .iter()
-                        .any(|(_, m)| m.name == variant_name);
-
-                    if !has_method {
-                        let span = node.path.segments[1].ident.span();
-                        self.validator.diagnostics.push(Diagnostic {
-                            severity: Severity::Error,
-                            file: self.validator.file_path.to_path_buf(),
-                            line: span.start().line,
-                            column: span.start().column + 1,
-                            message: format!(
-                                "no variant `{variant_name}` in enum `{type_name}`"
-                            ),
-                            error_code: Some("E0599".to_string()),
-                            hint: if similar.len() == 1 {
-                                Some(format!("did you mean `{}`?", similar[0]))
-                            } else {
-                                None
-                            },
-                            fix: None,
-                        });
-                    }
+            if let Some((is_enum, similar)) = check_result {
+                if !self.validator.symbols.may_have_associated_item(&type_name, &member_name) {
+                    let span = node.path.segments[1].ident.span();
+                    let message = if is_enum {
+                        format!("no variant or associated item named `{member_name}` found for enum `{type_name}` in the current scope")
+                    } else {
+                        format!("no function or associated item named `{member_name}` found for struct `{type_name}` in the current scope")
+                    };
+                    self.validator.diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        file: self.validator.file_path.to_path_buf(),
+                        line: span.start().line,
+                        column: span.start().column + 1,
+                        message,
+                        error_code: Some("E0599".to_string()),
+                        hint: if similar.len() == 1 {
+                            Some(format!("did you mean `{}`?", similar[0]))
+                        } else {
+                            None
+                        },
+                        fix: None,
+                    });
                 }
             }
         }
@@ -1530,12 +1525,6 @@ fn is_crate_path(path: &[String], crate_name: Option<&str>) -> bool {
 }
 
 /// Get the last segment name from a path.
-/// An UpperCamelCase name, as enum variants are written: an uppercase first letter and at
-/// least one lowercase letter (`Red`). A one-letter or all-caps name is read as a const.
-fn is_variant_like(name: &str) -> bool {
-    name.starts_with(|c: char| c.is_ascii_uppercase()) && name.chars().any(|c| c.is_ascii_lowercase())
-}
-
 fn path_last_segment(path: &syn::Path) -> Option<String> {
     path.segments.last().map(|s| s.ident.to_string())
 }
