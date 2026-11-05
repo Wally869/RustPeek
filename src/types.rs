@@ -350,7 +350,7 @@ impl SymbolTable {
         }
 
         for use_info in info.uses.iter().filter(|u| u.module == *module) {
-            if !use_info.is_glob || !use_info.vis.accessible_from(module, accessor) {
+            if !use_info.is_glob {
                 continue;
             }
             let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
@@ -360,13 +360,27 @@ impl SymbolTable {
             else {
                 continue;
             };
-            if let Resolved::Accessible(item) =
-                self.resolve_item_in(&target.path, name, accessor, crate_name, in_progress)
-            {
-                if target.accessible {
-                    return Resolved::Accessible(item);
+            // A glob imports only what its holder can see; the rest is skipped but still
+            // exists behind the glob, so an explicit path to it is private, not missing.
+            match self.resolve_item_in(&target.path, name, module, crate_name, in_progress) {
+                Resolved::Accessible(_) => {
+                    match self.resolve_item_in(&target.path, name, accessor, crate_name, in_progress) {
+                        Resolved::Accessible(item)
+                            if target.accessible
+                                && use_info.vis.accessible_from(module, accessor) =>
+                        {
+                            return Resolved::Accessible(item);
+                        }
+                        Resolved::Accessible(item) | Resolved::Inaccessible(item) => {
+                            inaccessible.get_or_insert(item);
+                        }
+                        Resolved::NotFound => {}
+                    }
                 }
-                inaccessible.get_or_insert(item);
+                Resolved::Inaccessible(item) => {
+                    inaccessible.get_or_insert(item);
+                }
+                Resolved::NotFound => {}
             }
         }
         match inaccessible {

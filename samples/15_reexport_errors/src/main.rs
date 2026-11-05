@@ -8,4 +8,5 @@ mod cyc_use;
 mod inline_use;
 mod private_reexports;
 mod mod_privacy_errors;
+mod glob_privacy_errors;
 fn main() {}
