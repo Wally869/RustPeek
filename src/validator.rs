@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use quote::ToTokens;
 use syn::visit::Visit;
 
 use crate::discovery;
@@ -182,7 +183,7 @@ impl<'a> ValidationVisitor<'a> {
                 let resolved =
                     discovery::resolve_mod_file(self.file_path, self.owned_dir, false, m);
 
-                if resolved.is_none() {
+                if resolved.is_none() && !self.has_cfg_twin(&ast.items, m) {
                     let span = m.ident.span();
                     self.diagnostics.push(Diagnostic {
                         severity: Severity::Error,
@@ -199,6 +200,31 @@ impl<'a> ValidationVisitor<'a> {
                 }
             }
         }
+    }
+
+    /// A `mod x;` with a sibling `mod x;` under a different `#[cfg]` whose file exists. rustc
+    /// loads only the active one; the tool cannot evaluate cfg, so the missing file is
+    /// accepted.
+    fn has_cfg_twin(&self, items: &[syn::Item], m: &syn::ItemMod) -> bool {
+        let cfgs = |module: &syn::ItemMod| -> Vec<String> {
+            module
+                .attrs
+                .iter()
+                .filter(|a| a.path().is_ident("cfg"))
+                .map(|a| a.meta.to_token_stream().to_string())
+                .collect()
+        };
+        let own = cfgs(m);
+        items.iter().any(|item| match item {
+            syn::Item::Mod(other) => {
+                other.ident == m.ident
+                    && other.content.is_none()
+                    && cfgs(other) != own
+                    && discovery::resolve_mod_file(self.file_path, self.owned_dir, false, other)
+                        .is_some()
+            }
+            _ => false,
+        })
     }
 
     /// Validate `use crate::...` statements resolve to actual items.

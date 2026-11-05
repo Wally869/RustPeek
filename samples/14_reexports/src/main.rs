@@ -2,6 +2,13 @@ extern crate alloc;
 mod ast;
 mod path_calls;
 mod macro_items;
+// A cfg pair: only the active file must exist.
+#[cfg(windows)]
+#[path = "cfg_twin/windows.rs"]
+mod cfg_twin;
+#[cfg(not(windows))]
+#[path = "cfg_twin/missing.rs"]
+mod cfg_twin;
 mod a;
 mod other;
 mod cyc;
