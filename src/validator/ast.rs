@@ -158,9 +158,9 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
                 {
                     let span = node.path.segments[1].ident.span();
                     let message = if is_enum {
-                        format!("no variant or associated item named `{member_name}` found for enum `{type_name}` in the current scope")
+                        format!("no variant, associated function, or constant named `{member_name}` found for enum `{type_name}` in the current scope")
                     } else {
-                        format!("no function or associated item named `{member_name}` found for struct `{type_name}` in the current scope")
+                        format!("no associated function or constant named `{member_name}` found for struct `{type_name}` in the current scope")
                     };
                     self.validator.diagnostics.push(Diagnostic {
                         severity: Severity::Error,
