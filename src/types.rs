@@ -190,19 +190,6 @@ impl SymbolTable {
         Self::default()
     }
 
-    /// Find an item by name across all modules
-    pub fn find_item(&self, name: &str) -> Vec<&ItemInfo> {
-        let mut results = Vec::new();
-        for module_info in self.modules.values() {
-            for item in &module_info.items {
-                if item.name == name {
-                    results.push(item);
-                }
-            }
-        }
-        results
-    }
-
     /// Map a use path to an absolute crate path, resolving `self`, any run of `super`,
     /// the crate's own name and child-module prefixes against `from`.
     pub fn resolve_use_path(
