@@ -259,7 +259,7 @@ impl SymbolTable {
             }
             _ => {
                 let candidate = from.child(first);
-                if self.modules.contains_key(&candidate) {
+                if self.module_exists(&candidate) {
                     let mut resolved = candidate.0;
                     resolved.extend(path[1..].iter().cloned());
                     Some(resolved)
