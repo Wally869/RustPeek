@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use quote::ToTokens;
-
 use syn::visit::Visit;
 
 use crate::discovery;
