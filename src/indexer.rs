@@ -208,6 +208,18 @@ fn index_item(item: &syn::Item, module_path: &ModulePath, info: &mut ModuleInfo)
             collect_use_tree(&u.tree, &mut Vec::new(), info, &vis, module_path);
         }
 
+        // Recorded as a named use of the crate's own name: an external path binding `name`.
+        syn::Item::ExternCrate(e) => {
+            let alias = e.rename.as_ref().map_or(&e.ident, |(_, alias)| alias).to_string();
+            info.uses.push(UseInfo {
+                path: vec![e.ident.to_string()],
+                alias,
+                is_glob: false,
+                vis: Vis::from_syn(&e.vis, module_path),
+                module: module_path.clone(),
+            });
+        }
+
         syn::Item::Impl(imp) => {
             if imp.trait_.is_some() {
                 // Trait impl — we only index direct impls for now

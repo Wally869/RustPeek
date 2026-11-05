@@ -9,6 +9,7 @@ mod cfg_twin;
 #[cfg(not(windows))]
 #[path = "cfg_twin/missing.rs"]
 mod cfg_twin;
+mod extern_paths;
 mod a;
 mod other;
 mod cyc;

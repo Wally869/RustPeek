@@ -103,6 +103,9 @@ pub enum Resolved<'a> {
     /// The item exists but the item or a re-export on the way to it is not visible to the accessor.
     Inaccessible(&'a ItemInfo),
     NotFound,
+    /// The name is bound outside the crate: an `extern crate`, a `use` of an external path,
+    /// or a name an external glob may bring.
+    External,
 }
 
 /// A module reached by a path. `accessible` is false when a module along the path is not
@@ -122,6 +125,8 @@ pub enum PathStop {
     Missing { index: usize },
     /// The item at `index` is not a module.
     NotModule { index: usize },
+    /// The name at `index` is bound outside the crate; the rest of the path is not ours to check.
+    External { index: usize },
 }
 
 /// Outcome of walking an absolute path: the module reached, whether every module on the
@@ -152,14 +157,14 @@ impl<'a> Resolved<'a> {
     pub fn item(self) -> Option<&'a ItemInfo> {
         match self {
             Resolved::Accessible(i) | Resolved::Inaccessible(i) => Some(i),
-            Resolved::NotFound => None,
+            Resolved::NotFound | Resolved::External => None,
         }
     }
 
     pub fn accessible(self) -> Option<&'a ItemInfo> {
         match self {
             Resolved::Accessible(i) => Some(i),
-            Resolved::Inaccessible(_) | Resolved::NotFound => None,
+            Resolved::Inaccessible(_) | Resolved::NotFound | Resolved::External => None,
         }
     }
 }
@@ -260,11 +265,20 @@ pub struct ModuleInfo {
 #[derive(Debug, Default)]
 pub struct SymbolTable {
     pub modules: HashMap<ModulePath, ModuleInfo>,
+    /// Dependencies and `extern crate` names; None when the dependencies are unknown.
+    pub external_crates: Option<HashSet<String>>,
 }
 
 impl SymbolTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A crate name usable without a local declaration: a sysroot crate in the extern
+    /// prelude (`alloc` and `test` need `extern crate`), a dependency or an `extern crate`.
+    pub fn is_known_crate(&self, name: &str) -> bool {
+        matches!(name, "std" | "core" | "proc_macro")
+            || self.external_crates.as_ref().is_some_and(|c| c.contains(name))
     }
 
     /// Map a use path to an absolute crate path, resolving `self`, any run of `super`,
@@ -377,11 +391,13 @@ impl SymbolTable {
         }
 
         let mut inaccessible = None;
+        let mut external = false;
         for use_info in info.uses.iter().filter(|u| u.module == *module) {
             if use_info.is_glob || use_info.alias != name {
                 continue;
             }
             let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
+                external = true;
                 continue;
             };
             let reachable = use_info.vis.accessible_from(accessor);
@@ -394,6 +410,7 @@ impl SymbolTable {
                 Resolved::Accessible(item) | Resolved::Inaccessible(item) => {
                     inaccessible.get_or_insert(item);
                 }
+                Resolved::External => external = true,
                 Resolved::NotFound => {}
             }
             in_progress.links.truncate(mark);
@@ -404,10 +421,18 @@ impl SymbolTable {
                 continue;
             }
             let Some(abs) = self.resolve_use_path(module, &use_info.path, crate_name) else {
+                // A glob of an unknown crate brings nothing.
+                let may_bring = self.external_crates.is_none()
+                    || use_info.path.first().is_some_and(|first| self.is_known_crate(first));
+                external |= may_bring;
                 continue;
             };
-            let Some(target) = self.walk_path_in(&abs, module, crate_name, in_progress).module()
-            else {
+            let glob_walk = self.walk_path_in(&abs, module, crate_name, in_progress);
+            if matches!(glob_walk.stop, Some(PathStop::External { .. })) {
+                external = true;
+                continue;
+            }
+            let Some(target) = glob_walk.module() else {
                 continue;
             };
             // A glob imports only what its holder can see; the rest is skipped but still
@@ -429,6 +454,7 @@ impl SymbolTable {
                         Resolved::Accessible(item) | Resolved::Inaccessible(item) => {
                             inaccessible.get_or_insert(item);
                         }
+                        Resolved::External => external = true,
                         Resolved::NotFound => {}
                     }
                     in_progress.links.truncate(mark);
@@ -436,11 +462,13 @@ impl SymbolTable {
                 Resolved::Inaccessible(item) => {
                     inaccessible.get_or_insert(item);
                 }
+                Resolved::External => external = true,
                 Resolved::NotFound => {}
             }
         }
         match inaccessible {
             Some(item) => Resolved::Inaccessible(item),
+            None if external => Resolved::External,
             None => Resolved::NotFound,
         }
     }
@@ -501,10 +529,11 @@ impl SymbolTable {
         let Some((name, module_part)) = abs.split_last() else {
             return Resolved::NotFound;
         };
-        let Some(module) = self
-            .walk_path_in(module_part, path_accessor, crate_name, in_progress)
-            .module()
-        else {
+        let module_walk = self.walk_path_in(module_part, path_accessor, crate_name, in_progress);
+        if matches!(module_walk.stop, Some(PathStop::External { .. })) {
+            return Resolved::External;
+        }
+        let Some(module) = module_walk.module() else {
             return Resolved::NotFound;
         };
         match self.resolve_item_in(&module.path, name, accessor, crate_name, in_progress) {
@@ -547,6 +576,10 @@ impl SymbolTable {
             let found =
                 self.resolve_item_in(&walk.reached, segment, accessor, crate_name, in_progress);
             in_progress.links.truncate(mark);
+            if matches!(found, Resolved::External) {
+                walk.stop = Some(PathStop::External { index });
+                return walk;
+            }
             if matches!(found, Resolved::Inaccessible(_)) {
                 walk.accessible = false;
                 walk.first_private.get_or_insert(index);
