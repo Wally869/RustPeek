@@ -30,6 +30,25 @@ mod crate_outer {
     pub(crate) use crate::reexport_chain::crate_mid::Item;
 }
 
+// Links wider than the re-export: a `pub` link under `pub(crate) use`,
+// a `pub(crate)` link under `pub(super) use`.
+mod wide_mid {
+    pub use crate::reexport_chain::def::Item;
+}
+
+mod narrow_outer {
+    pub(crate) use crate::reexport_chain::wide_mid::Item;
+}
+
+mod sup {
+    pub(crate) mod crate_link {
+        pub(crate) use crate::reexport_chain::def::Item;
+    }
+    pub mod user {
+        pub(super) use super::crate_link::Item;
+    }
+}
+
 mod private_mid {
     mod src {
         pub struct Thing;
