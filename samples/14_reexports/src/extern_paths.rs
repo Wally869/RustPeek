@@ -29,6 +29,12 @@ mod inner {
 pub fn uses_fmt() {
     use self::fmt::Write as W;
     self::kore::mem::drop(5u8);
+    // A non-root `extern crate` alias is in scope unqualified in its declaring module.
+    kore::mem::drop(6u8);
+    // Root aliases and `extern crate alloc` are in scope in every module.
+    root_core::mem::drop(7u8);
+    ::root_core::mem::drop(8u8);
+    let _: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
     let _ = (alloc,dealloc, Layout::new::<u8>());
 }
 

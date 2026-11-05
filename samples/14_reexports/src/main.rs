@@ -1,4 +1,6 @@
 extern crate alloc;
+// A root `extern crate` alias joins the extern prelude: child modules use it unqualified.
+extern crate core as root_core;
 mod ast;
 mod path_calls;
 mod macro_items;

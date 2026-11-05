@@ -49,6 +49,8 @@ fn read_cargo_info(crate_root: &Path) -> CargoInfo {
     CargoInfo { crate_name, dependencies: Some(dependencies) }
 }
 
+/// `extern crate` names of the crate root join the extern prelude; one declared in
+/// another module binds the name only there (the indexer records it as a `use`).
 fn collect_extern_crates(ast: &syn::File, names: &mut HashSet<String>) {
     for item in &ast.items {
         if let syn::Item::ExternCrate(e) = item {
@@ -145,7 +147,9 @@ pub fn analyze(crate_root: &Path, changed_files: Option<&[PathBuf]>) -> Analysis
             None => continue,
         };
 
-        collect_extern_crates(&ast, &mut extern_crates);
+        if *module_path == ModulePath::root() {
+            collect_extern_crates(&ast, &mut extern_crates);
+        }
         let module_info = indexer::index_file(&ast, module_path, file_path);
         symbol_table.modules.insert(module_path.clone(), module_info);
     }
