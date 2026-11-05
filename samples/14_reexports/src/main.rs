@@ -43,6 +43,7 @@ mod mod_fn_same_name;
 use mod_fn_same_name::coalesce;
 mod cfg_attr_path;
 mod macro_export_root;
+mod fn_crate_same_name;
 // The crate's own name as a path root, as syn does.
 extern crate self as sample_reexports;
 #[path = "path_mapped/real_name.rs"]

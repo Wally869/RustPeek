@@ -121,6 +121,11 @@ impl<'a> ValidationVisitor<'a> {
         if !self.is_unknown_external_crate(prefix) {
             return;
         }
+        self.push_unknown_root(prefix, span);
+    }
+
+    /// The diagnostic for a path root that is not a module or crate (see `report_unknown_crate`).
+    pub(super) fn push_unknown_root(&mut self, prefix: &[String], span: proc_macro2::Span) {
         let (message, code) = if prefix.len() > 1 {
             (format!("cannot find module or crate `{}`", prefix[0]), "E0433")
         } else {

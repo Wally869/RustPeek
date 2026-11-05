@@ -226,6 +226,26 @@ impl<'a> ValidationVisitor<'a> {
 }
 
 impl<'a, 'b> RefVisitor<'a, 'b> {
+    /// `name` in scope is only a fn, const or static: it cannot start a path (`func::x`).
+    /// Off where a macro call or a glob that is not local could define a module of that name.
+    fn value_item_as_path_root(&self, name: &str) -> bool {
+        let v = &*self.validator;
+        // A crate name is in the type namespace: a fn of the same name does not hide it.
+        if v.symbols.has_macro_call(&v.module_path) || v.is_known_crate(name) {
+            return false;
+        }
+        if !(v.scope_globs().is_empty() || self.unknown_behind_local_globs(name)) {
+            return false;
+        }
+        if v.lookup_in_scope(name, Namespace::Type).is_some() {
+            return false;
+        }
+        matches!(
+            v.lookup_in_scope(name, Namespace::Value).map(|item| &item.kind),
+            Some(ItemKind::Function | ItemKind::Const | ItemKind::Static)
+        )
+    }
+
     /// E0433 for an expression or type path whose module part names nothing in the crate.
     pub(super) fn check_path_modules(&mut self, path: &syn::Path, namespace: Namespace) {
         let names: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
@@ -234,6 +254,10 @@ impl<'a, 'b> RefVisitor<'a, 'b> {
         }
         if !self.validator.is_local_path(&names) {
             let first = names[0].as_str();
+            if self.value_item_as_path_root(first) {
+                self.validator.push_unknown_root(&names, path.segments[0].ident.span());
+                return;
+            }
             let defined_elsewhere = !self.validator.find_anywhere(first).is_empty();
             if !matches!(first, "crate" | "self" | "super")
                 && !defined_elsewhere

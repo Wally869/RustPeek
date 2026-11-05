@@ -25,5 +25,6 @@ mod not_imported_errors;
 mod path_call_errors;
 mod lowercase_name_errors;
 mod macro_export_errors;
+mod fn_path_root_errors;
 pub(super) fn root_item() {}
 fn main() {}
