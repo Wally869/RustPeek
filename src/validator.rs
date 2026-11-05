@@ -992,7 +992,7 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
             let type_name = node.path.segments[0].ident.to_string();
             let member_name = node.path.segments[1].ident.to_string();
 
-            let check_result: Option<(bool, Vec<String>)> = {
+            let check_result: Option<(bool, String, Vec<String>)> = {
                 self.validator.lookup_in_scope(&type_name)
                     .filter(|i| matches!(i.kind, ItemKind::Enum | ItemKind::Struct))
                     .filter(|i| !i.variants.iter().any(|v| v.name == member_name))
@@ -1001,12 +1001,16 @@ impl<'a, 'b, 'ast> Visit<'ast> for RefVisitor<'a, 'b> {
                             .filter(|v| is_similar(&v.name, &member_name))
                             .map(|v| v.name.clone())
                             .collect();
-                        (item.kind == ItemKind::Enum, similar)
+                        (item.kind == ItemKind::Enum, item.name.clone(), similar)
                     })
             };
 
-            if let Some((is_enum, similar)) = check_result {
-                if !self.validator.symbols.may_have_associated_item(&type_name, &member_name) {
+            // Impls name the type by its own name; the path may use an alias (`use a::T as U`).
+            if let Some((is_enum, item_name, similar)) = check_result {
+                let symbols = self.validator.symbols;
+                if !symbols.may_have_associated_item(&item_name, &member_name)
+                    && !symbols.may_have_associated_item(&type_name, &member_name)
+                {
                     let span = node.path.segments[1].ident.span();
                     let message = if is_enum {
                         format!("no variant or associated item named `{member_name}` found for enum `{type_name}` in the current scope")

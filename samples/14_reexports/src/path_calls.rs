@@ -132,3 +132,20 @@ pub fn assoc() -> Op {
     let _ = Op::Less;
     Op::DEFAULT
 }
+
+// A struct used through a `use .. as` alias: its impl names the real type (once_cell).
+mod renamed_type {
+    mod imp {
+        pub struct Cell(pub u8);
+        impl Cell {
+            pub fn new() -> Cell {
+                Cell(0)
+            }
+        }
+    }
+    use self::imp::Cell as Imp;
+
+    pub fn make() -> u8 {
+        Imp::new().0
+    }
+}
